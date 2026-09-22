@@ -1,51 +1,51 @@
-# Agent Instructions
+# Agent Instructions — video-editor-bot
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+Two humans (Kyle, Ramsey), two AI agents from different vendors, one repo.
+Agents don't talk to each other. They coordinate through **git** (code) and
+**beads** (`bd`, the shared task list). These house rules are the contract.
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [sync-concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+## House rules
 
-## Quick Reference
+**Profile:** this repo opts into the **Team-maintainer** profile (see the beads
+block below). You MAY commit to your own branch, push it, open PRs, close beads,
+and run `bd dolt push`. You may NOT push to `main`.
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+### 1. Sync first, sync last
+- Session start: `bd dolt pull` then `bd ready`.
+- After creating / closing / commenting on issues: `bd dolt pull` **then** `bd dolt push`.
+- `dolt.auto-push` stays **off** (two writers race → stranded remote history).
 
-## Non-Interactive Shell Commands
+### 2. Ownership — stay in your lane
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+| Directory   | Owner           | What lives there                                   |
+|-------------|-----------------|----------------------------------------------------|
+| `contract/` | shared          | edit-plan schema + examples. Change only via PR reviewed by the *other* side. |
+| `render/`   | Ramsey's agent  | edit plan → ffmpeg → output file                    |
+| `bot/`      | Kyle's agent    | user request → edit plan                            |
+| `assets/`   | shared          | sample clips, read-only during the build            |
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+Need something changed in a directory you don't own? File a bead
+(`bd create`), assign it (`bd update <id> --assignee=<name>`), and move on.
+Don't edit it yourself.
 
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
+### 3. One bead, one branch, one PR
+- Claim before coding: `bd update <id> --claim`.
+- Branch: `<your-name>/<bead-id>-<short-slug>` (e.g. `ramsey/veb-2rq-ffmpeg-runner`).
+- Commits reference the bead id. Small commits, pushed often.
+- PR title starts with the bead id. The **other human's agent** reviews — never self-review.
+- `make check` must be green before you open the PR (once `veb-uv0` lands).
+- After merge: `bd close <id>`, then `bd dolt push`.
 
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
+### 4. Talk on the bead, not in files
+Handoffs, questions, and "heads up, I changed X" go in
+`bd comments add <id> "..."`. The other agent sees it on its next `bd dolt pull`.
+No HANDOFF.md, no chat logs in the repo.
 
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+### 5. When stuck
+Don't invent a workaround in someone else's directory. Post a comment on the
+bead, mark it blocked if it truly is (`bd dep add`), and pick the next `bd ready` item.
+
+---
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
 ## Beads Issue Tracker
