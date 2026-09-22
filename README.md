@@ -28,6 +28,7 @@ Check: `bd version` should print `1.3.x`.
 git clone git@github.com:kyletabor/video-editor-bot.git
 cd video-editor-bot
 bd bootstrap          # pulls the shared task list from GitHub (refs/dolt/data) — NOT bd init
+git config beads.role maintainer   # you push issues too (silences the role warning)
 bd setup --list       # see which agent integrations exist
 bd setup <your-tool>  # e.g. bd setup codex / cursor / gemini / copilot / aider
 bd ready              # you should see the same issues Kyle sees
