@@ -11,6 +11,7 @@ block below). You MAY commit to your own branch, push it, open PRs, close beads,
 and run `bd dolt push`. You may NOT push to `main`.
 
 ### 1. Sync first, sync last
+- Your identity is `git user.name` (or `$BEADS_ACTOR`). Claims and comments carry it — make sure it's yours, not the other human's.
 - Session start: `bd dolt pull` then `bd ready`.
 - After creating / closing / commenting on issues: `bd dolt pull` **then** `bd dolt push`.
 - `dolt.auto-push` stays **off** (two writers race → stranded remote history).

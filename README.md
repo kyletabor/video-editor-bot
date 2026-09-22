@@ -29,6 +29,7 @@ git clone git@github.com:kyletabor/video-editor-bot.git
 cd video-editor-bot
 bd bootstrap          # pulls the shared task list from GitHub (refs/dolt/data) — NOT bd init
 git config beads.role maintainer   # you push issues too (silences the role warning)
+git config user.name                # this is your beads identity (claims, comments). Fine if it's you.
 bd setup --list       # see which agent integrations exist
 bd setup <your-tool>  # e.g. bd setup codex / cursor / gemini / copilot / aider
 bd ready              # you should see the same issues Kyle sees
@@ -67,6 +68,9 @@ bd blocked       # what's waiting on what
 bd show <id>     # details + dependencies
 bd comments add <id> "note"   # leave a note for the other agent on the issue itself
 ```
+
+**Identity:** beads stamps claims/comments with your `git user.name`. Running two agents on
+one machine? Give each its own: `export BEADS_ACTOR=<name>` before running `bd`.
 
 **Don'ts**
 - Don't turn on `dolt.auto-push` — with two writers, racing auto-pushes can strand
