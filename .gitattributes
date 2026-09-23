@@ -1,0 +1,21 @@
+# Normalize line endings so edits from Windows and Linux/macOS don't turn into
+# whole-file diffs (and merge conflicts).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Media is binary: never diff or normalize it.
+*.mp4 binary
+*.mov binary
+*.mkv binary
+*.webm binary
+*.avi binary
+*.wav binary
+*.mp3 binary
+*.m4a binary
+*.aac binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
