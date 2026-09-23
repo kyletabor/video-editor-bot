@@ -37,8 +37,8 @@ from your email or https://github.com/notifications. Then check that
 | Windows (Intel / AMD) | In PowerShell: `irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 \| iex` (needs Git for Windows) |
 | Windows on ARM (Snapdragon) | Do everything inside WSL (Ubuntu): the agent, your SSH key, and the clone. Then use the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
 
-If `bd version` then says "command not found", add the folder the installer
-printed to your PATH and open a new terminal.
+If `bd version` then says "command not found" (on Windows: "is not recognized"),
+add the folder the installer printed to your PATH and open a new terminal.
 
 **On Windows:** the built-in Windows PowerShell 5.1 can't run `cmd1 && cmd2`.
 Run chained commands one at a time, or use PowerShell 7 or Git Bash.
@@ -136,7 +136,8 @@ it's pushed.
 - To reach the other agent, comment on a task in **its** lane
   (`bd comments add <their-task-id> "..."`), or create a new task in its lane.
   Each agent's sync reads the comments on its own lane's open tasks.
-- PRs waiting for review show up in `gh pr list`, which the sync also checks.
+- PRs waiting for review show up in `gh pr list --search "-author:@me"`, which the
+  sync also checks.
 - Humans: say **"sync"** to your agent any time. It pulls, then tells you in three
   lines what the other agent is doing, what's next, and anything addressed to it.
 
@@ -161,17 +162,21 @@ chain). Finish these first:
 2. `veb-p12`: the edit-plan contract (schema plus two examples).
 3. `veb-uv0`: `make check` and CI, with one pinned ffmpeg version.
 4. `veb-0ct`: two or three short sample clips.
-5. Split `veb-0rh` (bot) and `veb-2rq` (render) into tasks of 30 minutes or less,
-   each with its lane label.
+5. Split `veb-0rh` (bot) and `veb-2rq` (render) into child tasks of 30 minutes or less
+   (`bd create --parent veb-2rq ...`; children inherit the lane label). Then take the
+   lane label off each parent (`bd label remove veb-2rq lane:render`) so agents pick
+   the small tasks, not the whole feature.
 
 ### Pre-flight (10 minutes before going on)
 
 1. Both: `ssh -T git@github.com`, `git ls-remote git@github.com:kyletabor/video-editor-bot.git`,
    `gh auth status`, `bd version`.
 2. Both: `git pull`, `bd dolt pull`, `bd list`. The two screens must match.
-3. Round trip: Kyle's agent runs `bd comments add veb-2rq "preflight ping from Kyle's agent"`,
-   then `bd dolt pull` and `bd dolt push`. Ramsey says "sync", and his agent must
-   report the ping. Then do the same the other way, on `veb-0rh`.
+3. Round trip: Kyle's agent comments on any open `lane:render` task
+   (`bd list --label lane:render`), for example
+   `bd comments add <id> "preflight ping from Kyle's agent"`, then runs `bd dolt pull`
+   and `bd dolt push`. Ramsey says "sync", and his agent must report the ping. Then do
+   the same the other way, on a `lane:bot` task.
 4. Ask each agent: "What's your lane, and what's the loop?" It should answer from AGENTS.md.
 5. Mark a known-good point: `git tag demo-start`, then `git push origin demo-start`.
 
@@ -193,7 +198,7 @@ chain). Finish these first:
 
 ```bash
 bd dolt pull                     # get the other side's task changes
-bd dolt push                     # publish yours (pull first; after any claim, comment, create, or close)
+bd dolt push                     # publish yours (pull first, except right after a claim: see AGENTS.md §2)
 bd ready --label lane:render     # what you can pick up (use your own lane)
 bd blocked                       # what's stuck, and on what
 bd list --status=in_progress     # what's being worked on right now
@@ -203,8 +208,10 @@ bd comments add <id> "text"      # add to it
 bd create --title "..." --labels lane:bot --description "..."   # new task in a lane
 bd label add <id> lane:render    # hand a shared task to an agent
 bd unclaim <id>                  # give back a task you hold
-gh pr list                       # open PRs (the other lane's are waiting for your agent's review)
+gh pr list --search "-author:@me"   # PRs waiting for your agent's review
+gh pr view <n>                   # a PR's reviewers and approvals
 ```
 
 Running two agents on one machine? Give each its own identity first:
-`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`).
+`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`). They share
+one GitHub login, so they can comment on each other's PRs but can't approve them.

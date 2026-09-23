@@ -4,8 +4,9 @@ Two humans (Kyle, Ramsey), two AI coding agents from different vendors, one repo
 You never talk to the other agent directly. You coordinate through **git** (code:
 one branch and one PR per task) and **beads** (`bd`: the shared task list, synced
 through this GitHub repo). These rules are the contract, and they override the
-generic beads guidance further down and in `bd prime`. README.md explains the same
-rules for humans.
+generic beads guidance further down and in `bd prime`. In particular, ignore
+`bd prime`'s generic session-close checklist: close a task only after its PR merges
+(loop step 9), and never push to `main`. README.md explains the same rules for humans.
 
 **Profile:** this repo sets `agent.profile: team-maintainer` in `.beads/config.yaml`.
 You may commit to your own branch, push it, open and merge PRs as the loop describes,
@@ -45,14 +46,15 @@ command on its own.
      claimed, two claims collided. **Don't push, don't start the work, and tell your human.**
      If they say keep it: `bd dolt push`. If they say give it back:
      `bd update <id> --assignee "<other person's git name>"`, then `bd dolt pull && bd dolt push`.
-4. **Branch:** `git switch -c <lane>/<id>-<slug> origin/main` (e.g. `render/veb-2rq-ffmpeg-runner`)
+4. **Branch:** `git switch -c <your-lane>/<id>-<slug> origin/main` (e.g. `render/veb-2rq-ffmpeg-runner`).
+   Always your own lane as the prefix, even for a shared task.
 5. **Build** only in your lane's folder. Commit messages start with the task id.
 6. **Open the PR:** `git push -u origin HEAD`, then
    `gh pr create --title "[<id>] <summary>" --body "Task <id>"`.
 7. **Review** (the *other* lane's agent does this when its sync shows your PR):
    `gh pr diff <n>`, then `gh pr review <n> --approve` or
    `gh pr review <n> --request-changes --body "<why>"`. Never approve your own PR.
-8. **Merge** (the author, once `gh pr view <n>` shows it approved):
+8. **Merge** (the author, once the `reviewers:` line of `gh pr view <n>` shows an approval):
    `gh pr merge <n> --squash --delete-branch`
 9. **Close:** `bd close <id> --reason "PR #<n>"`, then `bd dolt pull && bd dolt push`
 
@@ -62,8 +64,9 @@ command on its own.
   wins at the next sync and the first claimer gets no error. Lanes prevent this, so stay in yours.
 - At every sync, confirm your in-progress task is still yours: `bd show <id>` must list you
   as `Assignee`. If it doesn't, stop and tell your human.
-- Publish after every change: a claim, comment, create, or close is always followed by
-  `bd dolt pull && bd dolt push`.
+- Publish after every change. After a comment, create, or close: `bd dolt pull && bd dolt push`.
+  After a claim, follow loop step 3 instead: push first, and if the push is rejected, read
+  what the pull prints before you push again. Never chain pull and push right after a claim.
 - To reach the other agent, comment on a task in **its** lane (`bd comments add <id> "…"`)
   or create a task in its lane. It reads its own lane's comments when it syncs. No handoff
   files, no TODO lists.
@@ -87,11 +90,11 @@ command on its own.
 - **Session start:** run `bd prime`, then sync.
 - **When your human says "sync":**
   1. `git fetch origin && bd dolt pull`
-  2. `bd list --status=in_progress` shows who's doing what. Confirm your own task still
-     lists you (`bd show <id>`).
+  2. `bd list --status=in_progress`, then `bd show <id>` on each: who holds what. Confirm
+     your own task still lists you as `Assignee`.
   3. `bd ready --label lane:<yours>` shows what's next for you.
-  4. `gh pr list`: PRs from the other lane (their branch starts with its lane name) are
-     waiting for your review, and it shows whether yours are approved.
+  4. `gh pr list --search "-author:@me"`: PRs your human didn't open. They're waiting for
+     your review. For your own PRs, the `reviewers:` line of `gh pr view <n>` shows approvals.
   5. `bd list --label lane:<yours> --status=open,in_progress`, then `bd comments <id>` on
      each: these are the messages for you.
 
