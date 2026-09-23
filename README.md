@@ -13,6 +13,12 @@ them for humans.
 
 ## 1. Setup (once per person)
 
+### Get access
+
+This repo is private. Kyle adds you as a collaborator, and you accept the invite
+from your email or https://github.com/notifications. Then check that
+`git ls-remote git@github.com:kyletabor/video-editor-bot.git` lists branches.
+
 ### What you need
 
 | Need | Check it works |
@@ -29,7 +35,13 @@ them for humans.
 |--------------|---------|
 | Linux or macOS | `curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh \| bash` |
 | Windows (Intel / AMD) | In PowerShell: `irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 \| iex` (needs Git for Windows) |
-| Windows on ARM (Snapdragon) | Use WSL (Ubuntu) and the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
+| Windows on ARM (Snapdragon) | Do everything inside WSL (Ubuntu): the agent, your SSH key, and the clone. Then use the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
+
+If `bd version` then says "command not found", add the folder the installer
+printed to your PATH and open a new terminal.
+
+**On Windows:** the built-in Windows PowerShell 5.1 can't run `cmd1 && cmd2`.
+Run chained commands one at a time, or use PowerShell 7 or Git Bash.
 
 ### Join the project
 
@@ -80,7 +92,8 @@ Then paste this into your agent (Kyle's lane is `lane:bot`, Ramsey's is `lane:re
 - Each clone keeps its own copy of the task list: a small database in `.beads/`
   that git doesn't track.
 - The copies sync through this GitHub repo, on a hidden ref (`refs/dolt/data`)
-  that sits apart from the code branches.
+  that sits apart from the code branches. Beads also keeps a branch called
+  `__dolt_remote_info__` on GitHub. Leave it alone.
 - Syncing is manual, like git. `bd dolt pull` gets the other side's changes and
   `bd dolt push` publishes yours. If a push is rejected, pull first, then push again.
 - **Beads doesn't lock anything.** We tested it: when both agents claimed the same
@@ -99,8 +112,9 @@ Then paste this into your agent (Kyle's lane is `lane:bot`, Ramsey's is `lane:re
 | `lane:render` | Ramsey's agent | `render/` (edit plan → ffmpeg → video file) |
 | `lane:shared` | nobody until a human hands it out | `contract/`, `assets/`, files at the repo root |
 
-- Every task carries exactly one lane label. Agents only pick work from their own lane.
-- To hand a shared task to an agent, add its lane label: `bd label add <id> lane:render`.
+- Every task starts with exactly one lane label. Agents only pick work from their own lane.
+- To hand a shared task to an agent, add that agent's lane label to it:
+  `bd label add <id> lane:render`.
 - `contract/` is the one piece of code both lanes share: the edit-plan format.
   Changing it takes a shared task and a PR the other side reviews.
 - Each lane keeps its own dependency file inside its own folder, so nobody
@@ -119,9 +133,10 @@ it's pushed.
 
 ### Talking to each other
 
-- A question or heads-up about a task goes in a comment on it:
-  `bd comments add <id> "..."`. The other agent sees it on its next sync.
-- Need work from the other lane? Create a task with *their* lane label.
+- To reach the other agent, comment on a task in **its** lane
+  (`bd comments add <their-task-id> "..."`), or create a new task in its lane.
+  Each agent's sync reads the comments on its own lane's open tasks.
+- PRs waiting for review show up in `gh pr list`, which the sync also checks.
 - Humans: say **"sync"** to your agent any time. It pulls, then tells you in three
   lines what the other agent is doing, what's next, and anything addressed to it.
 
@@ -137,14 +152,28 @@ it's pushed.
 
 ## 4. Live session runbook
 
+### Before the talk: pre-build
+
+Both lanes stay blocked until the shared groundwork lands (`bd blocked` shows the
+chain). Finish these first:
+
+1. `veb-de2`: Kyle and Ramsey pick the language/runtime, then close the task.
+2. `veb-p12`: the edit-plan contract (schema plus two examples).
+3. `veb-uv0`: `make check` and CI, with one pinned ffmpeg version.
+4. `veb-0ct`: two or three short sample clips.
+5. Split `veb-0rh` (bot) and `veb-2rq` (render) into tasks of 30 minutes or less,
+   each with its lane label.
+
 ### Pre-flight (10 minutes before going on)
 
-1. Both: `ssh -T git@github.com`, `gh auth status`, `bd version`.
-2. Both: `git pull && bd dolt pull && bd list`. The two screens must match.
-3. Round trip: each agent posts `bd comments add veb-t2b "preflight: <name> online"`
-   and runs `bd dolt push`. The other says "sync" and must see it.
+1. Both: `ssh -T git@github.com`, `git ls-remote git@github.com:kyletabor/video-editor-bot.git`,
+   `gh auth status`, `bd version`.
+2. Both: `git pull`, `bd dolt pull`, `bd list`. The two screens must match.
+3. Round trip: Kyle's agent runs `bd comments add veb-2rq "preflight ping from Kyle's agent"`,
+   then `bd dolt pull` and `bd dolt push`. Ramsey says "sync", and his agent must
+   report the ping. Then do the same the other way, on `veb-0rh`.
 4. Ask each agent: "What's your lane, and what's the loop?" It should answer from AGENTS.md.
-5. Mark a known-good point: `git tag demo-start && git push origin demo-start`.
+5. Mark a known-good point: `git tag demo-start`, then `git push origin demo-start`.
 
 ### If something goes wrong
 
@@ -152,9 +181,10 @@ it's pushed.
 |--------------|------------|
 | `bd dolt push` rejected ("tip of your current branch is behind") | `bd dolt pull`, then `bd dolt push` |
 | `issue already claimed by …` | It's taken. Pick another task. |
-| A pull prints `auto-merged issue …; assignee …` | Two claims collided. The humans decide who keeps it; the other agent runs `bd unclaim <id>` and pushes. |
+| A pull prints `auto-merged issue <id>; assignee …` | Two claims collided. The agent that saw it doesn't push, and the humans pick who keeps the task. **If that agent keeps it,** it runs `bd dolt push` and the other agent drops the task at its next sync. **If the other agent keeps it,** the agent that saw the notice runs `bd update <id> --assignee "<other person's git name>"`, then `bd dolt pull` and `bd dolt push`. |
+| `bd ready --label lane:<x>` is empty | `bd blocked` shows what's in the way. Usually a shared task needs finishing or handing out. |
 | A PR has a merge conflict | Its author rebases on `origin/main` and fixes only their own files. |
-| An agent went sideways or crashed | Close its PR, `bd unclaim <id>`, `bd dolt push`, start that task over. |
+| An agent went sideways or crashed | Close its PR. On that person's machine, run `bd unclaim <id>`, then `bd dolt pull` and `bd dolt push`, and start the task over. |
 | Beads sync is broken | Keep coding. Coordinate in PR comments and fix sync after the talk. |
 
 ---
@@ -163,16 +193,18 @@ it's pushed.
 
 ```bash
 bd dolt pull                     # get the other side's task changes
-bd dolt push                     # publish yours (after any claim, comment, create, or close)
+bd dolt push                     # publish yours (pull first; after any claim, comment, create, or close)
 bd ready --label lane:render     # what you can pick up (use your own lane)
+bd blocked                       # what's stuck, and on what
 bd list --status=in_progress     # what's being worked on right now
 bd show <id>                     # details, assignee, dependencies
 bd comments <id>                 # read the conversation on a task
 bd comments add <id> "text"      # add to it
 bd create --title "..." --labels lane:bot --description "..."   # new task in a lane
 bd label add <id> lane:render    # hand a shared task to an agent
-bd unclaim <id>                  # give a task back
+bd unclaim <id>                  # give back a task you hold
+gh pr list                       # open PRs (the other lane's are waiting for your agent's review)
 ```
 
 Running two agents on one machine? Give each its own identity first:
-`export BEADS_ACTOR=<name>`.
+`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`).

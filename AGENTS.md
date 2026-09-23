@@ -3,12 +3,19 @@
 Two humans (Kyle, Ramsey), two AI coding agents from different vendors, one repo.
 You never talk to the other agent directly. You coordinate through **git** (code:
 one branch and one PR per task) and **beads** (`bd`: the shared task list, synced
-through this GitHub repo). These rules are the contract. README.md explains the
-same rules for humans.
+through this GitHub repo). These rules are the contract, and they override the
+generic beads guidance further down and in `bd prime`. README.md explains the same
+rules for humans.
 
-**Profile:** this repo opts into the **Team-maintainer** profile described in the
-beads block below. You may commit to your own branch, push it, open and merge PRs
-as the loop describes, close tasks, and run `bd dolt push`. Never push to `main`.
+**Profile:** this repo sets `agent.profile: team-maintainer` in `.beads/config.yaml`.
+You may commit to your own branch, push it, open and merge PRs as the loop describes,
+close tasks, and run `bd dolt push`. Never push to `main`.
+
+**Identity:** you act under your human's git name (`git config user.name`, or
+`$BEADS_ACTOR` if it's set). Every claim and comment carries it.
+
+**Windows PowerShell 5.1** can't run `cmd1 && cmd2`. If that's your shell, run each
+command on its own.
 
 ## 1. Your lane
 
@@ -19,43 +26,49 @@ as the loop describes, close tasks, and run `bd dolt push`. Never push to `main`
 | `lane:shared` | nobody, until a human adds your lane label | `contract/`, `assets/`, root files   |
 
 - If you don't know your lane, ask your human before doing anything else.
-- Pick work only with `bd ready --label lane:<yours>`. Never pick from a bare `bd ready`.
-- Every task you create gets exactly one lane label: `bd create ... --labels lane:<x>`.
+- Pick work only with `bd ready --label lane:<yours>`. Never pick from a bare `bd ready`,
+  even though the generic beads guidance suggests it.
+- Every task you create starts with exactly one lane label: `bd create ... --labels lane:<x>`.
 - A human hands you a shared task by adding your lane label to it. Only then may you
   edit shared files, and only for that task. Keep that PR tiny and get it merged first.
 
 ## 2. The loop: every task, in this order
 
 1. **Sync:** `git fetch origin && bd dolt pull`
-2. **Pick:** `bd ready --label lane:<yours>`
+2. **Pick:** `bd ready --label lane:<yours>`. If nothing is ready, run `bd blocked`,
+   tell your human what's in the way, and wait.
 3. **Claim and publish in one go, before writing any code:**
    `bd update <id> --claim && bd dolt push`
    - `issue already claimed by …` → it's taken. Pick another.
    - Push rejected (`tip of your current branch is behind`) → `bd dolt pull`, then `bd dolt push`.
-     If that pull prints `auto-merged issue <id>; assignee …` for the task you just
-     claimed, two claims collided. **Stop and tell your human.** Don't start the work.
+   - If that pull prints `auto-merged issue <id>; assignee …` for the task you just
+     claimed, two claims collided. **Don't push, don't start the work, and tell your human.**
+     If they say keep it: `bd dolt push`. If they say give it back:
+     `bd update <id> --assignee "<other person's git name>"`, then `bd dolt pull && bd dolt push`.
 4. **Branch:** `git switch -c <lane>/<id>-<slug> origin/main` (e.g. `render/veb-2rq-ffmpeg-runner`)
 5. **Build** only in your lane's folder. Commit messages start with the task id.
 6. **Open the PR:** `git push -u origin HEAD`, then
-   `gh pr create --title "[<id>] <summary>" --body "Task <id>"`, then
-   `bd comments add <id> "PR #<n> ready for review"` and `bd dolt pull && bd dolt push`.
-7. **Review** (done by the *other* lane's agent): `gh pr diff <n>`, then
-   `gh pr review <n> --approve` or `gh pr review <n> --request-changes --body "<why>"`.
-   Never approve your own PR.
-8. **Merge** (the author, after approval): `gh pr merge <n> --squash --delete-branch`
+   `gh pr create --title "[<id>] <summary>" --body "Task <id>"`.
+7. **Review** (the *other* lane's agent does this when its sync shows your PR):
+   `gh pr diff <n>`, then `gh pr review <n> --approve` or
+   `gh pr review <n> --request-changes --body "<why>"`. Never approve your own PR.
+8. **Merge** (the author, once `gh pr view <n>` shows it approved):
+   `gh pr merge <n> --squash --delete-branch`
 9. **Close:** `bd close <id> --reason "PR #<n>"`, then `bd dolt pull && bd dolt push`
 
 ## 3. Beads rules
 
 - **Beads does not lock.** If two agents claim the same task, the *later* claim silently
   wins at the next sync and the first claimer gets no error. Lanes prevent this, so stay in yours.
-- At every sync, confirm your in-progress task is still yours: `bd show <id>` must list
-  you as `Assignee`. If it doesn't, stop and tell your human.
+- At every sync, confirm your in-progress task is still yours: `bd show <id>` must list you
+  as `Assignee`. If it doesn't, stop and tell your human.
 - Publish after every change: a claim, comment, create, or close is always followed by
   `bd dolt pull && bd dolt push`.
-- Talk on the task, not in files: `bd comments add <id> "…"`. No HANDOFF.md, no TODO lists.
-- Need something from the other lane? Create a task in *their* lane with a clear ask and
-  don't edit their files. If you're blocked on it: `bd dep add <your-id> <their-id>`.
+- To reach the other agent, comment on a task in **its** lane (`bd comments add <id> "…"`)
+  or create a task in its lane. It reads its own lane's comments when it syncs. No handoff
+  files, no TODO lists.
+- Need work from the other lane? Create a task in *its* lane with a clear ask, and don't
+  edit its files. If you're blocked on it: `bd dep add <your-id> <their-id>`.
 - Never: `bd init` in a clone (fresh clones use `bd bootstrap`), turning on `dolt.auto-push`,
   `git push --mirror` (it deletes the shared task list), or editing `.beads/issues.jsonl` by hand.
 
@@ -72,10 +85,18 @@ as the loop describes, close tasks, and run `bd dolt push`. Never push to `main`
 ## 5. Session start, and "sync"
 
 - **Session start:** run `bd prime`, then sync.
-- **When your human says "sync":** run `git fetch origin && bd dolt pull`, then
-  `bd list --status=in_progress`, `bd ready --label lane:<yours>`, and `bd comments <id>` for
-  your in-progress task. Answer in three lines: what the other agent is doing, what's next
-  for you, and anything addressed to you.
+- **When your human says "sync":**
+  1. `git fetch origin && bd dolt pull`
+  2. `bd list --status=in_progress` shows who's doing what. Confirm your own task still
+     lists you (`bd show <id>`).
+  3. `bd ready --label lane:<yours>` shows what's next for you.
+  4. `gh pr list`: PRs from the other lane (their branch starts with its lane name) are
+     waiting for your review, and it shows whether yours are approved.
+  5. `bd list --label lane:<yours> --status=open,in_progress`, then `bd comments <id>` on
+     each: these are the messages for you.
+
+  Answer in three lines: what the other agent is doing, what's next for you, and anything
+  addressed to you (comments, or PRs to review).
 
 ---
 
