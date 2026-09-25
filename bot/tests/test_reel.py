@@ -174,6 +174,44 @@ def test_build_reel_plan_validates_against_v11():
         assert clip["segments"] == [{"start": m.start, "end": m.end}]
 
 
+class _FakeProc:
+    """Stands in for the cliprender subprocess: records how it was started."""
+
+    calls: list = []
+
+    def __init__(self, cmd, **kw):
+        self.calls.append((cmd, kw))
+        self.stdout = iter(kw.pop("_lines", ["clip-01\t/x/clip-01.mp4\t12.000000\n"]))
+        self.returncode = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_render_drops_virtual_env_and_reports_reel_line(monkeypatch, capsys, tmp_path):
+    """Regression (lane C review): the nested uv warned about bot/.venv on every --render."""
+    import shutil
+    import subprocess as sp
+
+    monkeypatch.setenv("VIRTUAL_ENV", "/repo/bot/.venv")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv")
+    lines = ["clip-01\t/x/clip-01.mp4\t12.000000\n", "reel\t/x/reel.mp4\t34.000000\n"]
+    monkeypatch.setattr(sp, "Popen", lambda cmd, **kw: _FakeProc(cmd, _lines=lines, **kw))
+    assert cli.render(tmp_path / "plan.json") == 0
+    cmd, kw = _FakeProc.calls[-1]
+    assert cmd[:5] == ["/usr/bin/uv", "run", "--project", "render", "cliprender"] and "--overwrite" in cmd
+    assert "VIRTUAL_ENV" not in kw["env"] and kw.get("shell") is None
+    out = capsys.readouterr().out
+    assert "reel written: /x/reel.mp4" in out and "clip-01\t/x/clip-01.mp4" in out
+
+    monkeypatch.setattr(sp, "Popen", lambda cmd, **kw: _FakeProc(cmd, **kw))  # v1 renderer: no reel line
+    assert cli.render(tmp_path / "plan.json") == 0
+    assert "did not report a reel" in capsys.readouterr().out
+
+
 def _tools_present() -> bool:
     try:
         subprocess.run(["ffprobe", "-version"], capture_output=True, check=True)
