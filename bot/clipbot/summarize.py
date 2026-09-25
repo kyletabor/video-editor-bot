@@ -38,6 +38,11 @@ def sentences(cues: list[Cue]) -> list[Sentence]:
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             continue
+        if buf and c.speaker != buf_speaker:
+            # Speaker changed mid-sentence (interruption / unpunctuated turn):
+            # flush so the other person's words are never credited to the first.
+            out.append(Sentence(buf_start, " ".join(buf).rstrip(".") + ".", buf_speaker))
+            buf = []
         if not buf:
             buf_start, buf_speaker = c.start, c.speaker
         parts = re.split(r"(?<=[.!?])\s+", text)

@@ -36,6 +36,32 @@ def test_parse_tolerates_crlf_and_missing_index():
     assert [c.text for c in cues] == ["hello", "world"]
 
 
+def test_parse_non_ascii():
+    cues = parse_srt("1\n00:00:00,000 --> 00:00:02,000\nMāori café: the project is ready.\n")
+    assert cues[0].text == "Māori café: the project is ready."
+
+
+def test_extract_forces_utf8_decoding(monkeypatch):
+    """Regression (PR #10 review): ffmpeg writes UTF-8; Windows locale must not decode it."""
+    import subprocess
+
+    from clipbot import captions
+
+    seen: dict = {}
+
+    class R:
+        stdout = "1\n00:00:00,000 --> 00:00:02,000\nMāori café\n"
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = captions.extract_embedded_srt("x.mp4")
+    assert seen.get("encoding") == "utf-8"
+    assert "Māori" in out
+
+
 def test_roundtrip():
     cues = [Cue(0.0, 1.5, "a"), Cue(1.5, 3.0, "b")]
     again = parse_srt(cues_to_srt(cues))

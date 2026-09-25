@@ -34,7 +34,10 @@ def extract_embedded_srt(source: str | Path, stream_index: int = 0) -> str:
         "-map", f"0:s:{stream_index}", "-f", "srt", "-",
     ]
     try:
-        return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+        # ffmpeg writes UTF-8; never let the OS locale (cp1252 on Windows) decode it.
+        return subprocess.run(
+            cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        ).stdout
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH") from e
     except subprocess.CalledProcessError as e:

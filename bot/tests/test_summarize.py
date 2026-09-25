@@ -12,6 +12,16 @@ def test_sentences_join_across_cues_and_keep_start_time():
     assert s[1].start == 4
 
 
+def test_speaker_change_flushes_unfinished_sentence():
+    """Regression (PR #10 review): Ramsey's words must not be credited to Kyle."""
+    cues = [Cue(0, 4, "The next step is", "Kyle"), Cue(4, 8, "I disagree, we should test first.", "Ramsey")]
+    s = sentences(cues)
+    assert [(x.speaker, x.text) for x in s] == [
+        ("Kyle", "The next step is."),
+        ("Ramsey", "I disagree, we should test first."),
+    ]
+
+
 def test_executive_summary_picks_substantive_sentences():
     picked = executive_summary(DEMO, n=3)
     assert 1 <= len(picked) <= 3
