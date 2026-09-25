@@ -1,9 +1,9 @@
 # Timeline and edit-plan rules
 
-Map to the contract v1 renderer interface proposed in
-[PR #7](https://github.com/kyletabor/video-editor-bot/pull/7), using its
-[`contract/edit-plan.schema.json`](https://github.com/kyletabor/video-editor-bot/blob/be000dfaed7a5e6255ce7cabf0370fb19060b970/contract/edit-plan.schema.json).
-Once merged, use the repository's authoritative contract when implementing.
+Map to the repository's authoritative contract,
+[`contract/edit-plan.schema.json`](../../../../contract/edit-plan.schema.json)
+(v1.1; see [`contract/README.md`](../../../../contract/README.md)), first proposed
+in [PR #7](https://github.com/kyletabor/video-editor-bot/pull/7).
 Its `clips[].segments` are keep ranges with numeric `start` and `end` values in
 seconds. The integer-millisecond keep/remove model below is an adapter's
 normalization model, not a second renderer schema or an application runtime.

@@ -9,26 +9,32 @@ Use the workflow: accept one local video, identify sections to keep or remove,
 preview the edit, and export local video files containing the selected parts.
 The goal is a shorter edit. File-size compression is a separate capability.
 
-This skill supplies an implementation framework for local execution. The AI is
-the interface; v1 has no web page or packaged application. When asked to edit an
-actual file, first identify an available implementation and its capabilities.
-Do not present the proposed interfaces as
-live tools or claim an export exists without a verified output artifact.
+The AI is the interface; v1 has no web page or packaged application. The
+implementation is the repository's local CLI, `clipbot` (intake) and `cliprender`
+(rendering); the web adapter sketched at the end of the references is optional
+future work, not a live tool. Never claim an export exists without a verified
+output artifact.
 
 ## Repository integration
 
-Read `AGENTS.md` and current Beads context before implementation. Target the
-Python 3.11+ / uv and FFmpeg/ffprobe stack recorded in `veb-de2`, with CLI entry
-points and this repo skill on Pi (ARM Linux), Windows and macOS. Check that bead's
-current decision status before changing runtime configuration.
+The primary path is the local CLI in this repository, driven by an agent skill.
+Intake is `clipbot` (`bot/`, Kyle's lane), rendering is `cliprender` (`render/`,
+Ramsey's lane), and the edit plan in `contract/` (v1.1, see
+[`contract/README.md`](../../../contract/README.md)) is the only interface between
+them; changing it requires opposite-side review. For summary reels, outlines,
+hand-picked moments and Markdown summaries use the
+[clipbot skill](../clipbot/SKILL.md); this skill covers keep/remove edits of one
+video. Both run with Python 3.11+ / uv and FFmpeg/ffprobe 4.4 or newer (pinned
+7.0.2 via `scripts/install_ffmpeg.py`) on Pi (ARM Linux), Windows and macOS.
 
-Kyle owns intake and user interaction in `bot/`; Ramsey owns rendering in
-`render/`. The shared edit-plan schema belongs in `contract/` under `veb-p12`
-and requires opposite-side review. Normalize keep/remove requests into contract
-v1 `clips[].segments` in seconds as described in the timeline reference; do not
-create a second authoritative schema. Assign cross-lane work through
-Beads instead of editing the other lane. Store handoffs and remaining work in
-Beads, not in skill reference files.
+Read `AGENTS.md` and current Beads context before implementation. Normalize
+keep/remove requests into contract v1 `clips[].segments` in seconds as described
+in [the timeline reference](references/timeline.md): the adapter's integer
+half-open millisecond ranges `[start_ms, end_ms)` map to `start = start_ms / 1000`
+and `end = end_ms / 1000` on the same half-open source timeline. Do not create a
+second authoritative schema. Assign cross-lane work through Beads instead of
+editing the other lane. Store handoffs and remaining work in Beads, not in skill
+reference files.
 
 ## Workflow
 
@@ -49,9 +55,11 @@ Beads, not in skill reference files.
    original source, not a timeline shifted by earlier removals. Reject invalid
    edits before invoking the renderer.
 5. Use [the workflow framework](references/framework.md) to connect local intake,
-   preview, CLI rendering and output files. Offer a preview; an explicit request
-   to export an unambiguous edit already authorizes rendering. Ensure an export
-   uses the exact saved plan the user selected, including any later changes.
+   preview, CLI rendering and output files. Render the saved plan from the
+   repository root with `uv run --project render cliprender <plan.json> --root .`.
+   Offer a preview; an explicit request to export an unambiguous edit already
+   authorizes rendering. Ensure an export uses the exact saved plan the user
+   selected, including any later changes.
 6. Render accurate cuts, join kept segments in source order and retain their
    synchronized audio. Verify the complete output before publishing it. Report
    the ranges used, original/edited duration, output format and actual file size.

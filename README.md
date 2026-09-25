@@ -1,320 +1,166 @@
 # video-editor-bot
 
-A video editor bot, built live on stage by two humans and two AI coding agents
-from different vendors, in one repo.
+Turns a long recorded session (a 1–2 hour Meet/Zoom talk, workshop or demo) into
+a short **summary reel** of its key moments — an intro slide, a handful of clips in
+chronological order with sparse explainer cards between them — plus a written
+**executive summary and transcript** in Markdown. It was built live on stage by two
+AI coding agents from different vendors, working in one repo under two humans: see
+the [retrospective](https://claude.ai/artifact/NewJDksbu4ysz3kSCrs6xs) and the
+[timeline](https://claude.ai/artifact/4nMDqZgLjo1N7izvRGyXC3).
 
-**How the agents coordinate:** they never talk to each other directly.
-Code moves through **git** (one branch and one PR per task). Tasks move through
-**beads** (`bd`), a shared task list that syncs through this same GitHub repo.
-The rules the agents follow are in [AGENTS.md](AGENTS.md). This README explains
-them for humans.
+## Quickstart
 
----
+### 1. Prerequisites (Windows, macOS, Linux including ARM)
 
-## 1. Setup (once per person)
+| Need | Get it | Check |
+|---|---|---|
+| git | [git-scm.com](https://git-scm.com/) | `git --version` |
+| uv | [docs.astral.sh/uv](https://docs.astral.sh/uv/) (it fetches a Python for you) | `uv --version` |
+| FFmpeg + ffprobe, 4.4 or newer | below | `ffmpeg -version`, `ffprobe -version` |
 
-### Get access
-
-This repo is private. Kyle adds you as a collaborator, and you accept the invite
-from your email or https://github.com/notifications. Use either SSH or HTTPS in
-the clone instructions below; SSH keys are optional for HTTPS contributors.
-
-### What you need
-
-| Need | Check it works |
-|------|----------------|
-| git, with access to this GitHub repo | SSH: `ssh -T git@github.com`; HTTPS: `gh auth status` after HTTPS login below |
-| GitHub CLI, logged in | `gh auth status` |
-| beads 1.3.0 or newer | `bd version` |
-| an AI coding agent | Claude Code, Codex, Cursor, Gemini CLI, Copilot… any of them |
-| FFmpeg and ffprobe | `ffmpeg -version` and `ffprobe -version`; use both from the same build. Version policy is tracked in `veb-uv0`. |
-
-### Install beads
-
-| Your machine | Command |
-|--------------|---------|
-| Linux or macOS | `curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh \| bash` |
-| Windows (Intel / AMD) | In PowerShell: `irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 \| iex` (needs Git for Windows) |
-| Windows on ARM (Snapdragon) | Do everything inside WSL (Ubuntu): the agent, GitHub authentication, and the clone. Then use the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
-
-If `bd version` then says "command not found" (on Windows: "is not recognized"),
-add the folder the installer printed to your PATH and open a new terminal.
-On Windows x64 the release installer uses `%LOCALAPPDATA%\Programs\bd` by default;
-if it falls back to a Go install, use the Go binary directory it reports instead.
-
-### Windows tools and PATH
-
-Install [Git for Windows](https://gitforwindows.org/) and the
-[GitHub CLI](https://cli.github.com/), then run the Windows Beads installer above.
-For FFmpeg, choose a Windows build linked from the
-[FFmpeg download page](https://ffmpeg.org/download.html#build-windows), such as
-Gyan's release essentials ZIP. Extract it to a permanent location and locate
-the `bin` directory containing **both** `ffmpeg.exe` and `ffprobe.exe`.
-
-In Windows, search for **Edit environment variables for your account**. Under
-**User variables**, edit **Path**, then add the Beads install directory and the
-FFmpeg `bin` directory as separate entries. Add directories, not executable
-filenames, and keep the existing entries. Open a new terminal (restart your
-agent app too if it still sees the old PATH), then check PowerShell can find them:
-
-```powershell
-Get-Command git, gh, bd, ffmpeg, ffprobe | Select-Object Name, Source
-```
-
-If multiple versions are installed, `Get-Command bd -All` or `Get-Command ffmpeg -All`
-shows which PATH entry wins. On Windows ARM using WSL, install and run these
-tools inside the same WSL environment as the clone and agent.
-
-**On Windows:** the built-in Windows PowerShell 5.1 can't run `cmd1 && cmd2`.
-Run chained commands one at a time, or use PowerShell 7 or Git Bash.
-
-### Join the project
-
-Choose one clone method. With SSH already configured:
+Recommended FFmpeg: the pinned build the project is tested against (7.0.2, SHA-256
+verified, Windows x64 and Linux x64/ARM). From a fresh clone:
 
 ```bash
-git ls-remote git@github.com:kyletabor/video-editor-bot.git
-git clone git@github.com:kyletabor/video-editor-bot.git
-cd video-editor-bot
-```
-
-For HTTPS, run these commands in PowerShell (or another shell):
-
-```powershell
-gh auth login --hostname github.com --git-protocol https --web
-gh auth setup-git
-gh auth status
-git ls-remote https://github.com/kyletabor/video-editor-bot.git
 git clone https://github.com/kyletabor/video-editor-bot.git
 cd video-editor-bot
+uv run --python 3.12 python scripts/install_ffmpeg.py
 ```
 
-Before the first `bd bootstrap`, HTTPS contributors create
-`.beads/config.local.yaml` in this fresh clone:
+It lands in `.tools/ffmpeg/`, and `clipbot` and the check gate use it from there
+on their own. Only when you call `cliprender` directly does it need to be on
+`PATH` — Bash: `export PATH="$PWD/.tools/ffmpeg:$PATH"`; PowerShell:
+`$env:PATH = "$(Resolve-Path .tools/ffmpeg);$env:PATH"` — or pass
+`--ffmpeg .tools/ffmpeg/ffmpeg --ffprobe .tools/ffmpeg/ffprobe`. On macOS there is
+no pinned build; `brew install ffmpeg` is fine. A system FFmpeg 4.4 (Ubuntu 22.04)
+renders correctly too, but five renderer edge-case tests need 7.x, so prefer the
+pinned build.
 
-```powershell
-@'
-sync.remote: "git+https://github.com/kyletabor/video-editor-bot.git"
-dolt.auto-push: false
-'@ | Set-Content -Encoding ascii .beads/config.local.yaml
-git check-ignore -v .beads/config.local.yaml
-```
+### 2. Make a reel from the sample clip
 
-Keep the `git+https://` prefix: this is the Beads sync URL, separate from Git's
-`origin`. The local file overrides `.beads/config.yaml` and is excluded by
-`.gitignore`; the check must print a matching ignore rule. Do not put credentials
-in either YAML file or change the tracked SSH setting for everyone. Keep
-`dolt.auto-push` off; do not override it with `BD_DOLT_AUTO_PUSH=true`.
-
-Your beads identity is your git name (`git config user.name`). It's stamped on
-every claim and comment, so make sure it's yours.
-
-For either clone method, connect to the **existing shared task database**:
+One command, from the repository root (`uv` builds the virtualenv on first run):
 
 ```bash
-git config user.name
-git config beads.role maintainer
-bd bootstrap --dry-run
+uv run --project bot clipbot reel --source assets/demo-clip.mp4 --minutes 0.5 --render --out out/demo/plan.json
 ```
 
-The preview must select the existing remote task data (`refs/dolt/data`), not
-create an empty database. If authentication fails or it proposes a fresh empty
-database, stop and fix access/configuration. Never run `bd init` in this repo.
-Once the preview is correct:
+About 30 s on an 8-core ARM box. Outputs in `out/demo/`:
+
+| File | What it is |
+|---|---|
+| `reel.mp4` | the summary video: intro card, clips in order, a card before each section |
+| `clip-01-….mp4`, … | every moment as its own file, for Slack, a post or an email |
+| `summary.md` | executive summary, clip list, full transcript |
+| `plan.json` | the edit plan the renderer executed (see *How it works*) |
+| `moments.json` | the moments it chose, in the `--moments` format: edit and re-run (step 4) |
+
+### 3. Your own recording
 
 ```bash
-bd bootstrap
-git diff -- .beads/config.yaml
+uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --render --title "Q3 architecture review" --out out/q3-review/plan.json
 ```
 
-Beads 1.3.0 bootstrap can copy the effective HTTPS URL into tracked
-`.beads/config.yaml`. In this fresh clone, if the diff shows only that generated
-remote-setting change, restore the tracked file; the local override remains:
+- `--minutes 4` targets a 4-minute reel (±20 %, cards included). 2.5–5 minutes
+  suits a 1–2 hour session.
+- No captions in the file? (Meet and Zoom exports usually carry them;
+  `ffprobe path/to/session.mp4` lists a subtitle stream if so.) Add `--transcribe`
+  and run through the optional `whisper` extra:
+  `uv run --project bot --extra whisper clipbot reel --transcribe --source path/to/session.mp4 --minutes 4 --render --out out/q3-review/plan.json`.
+  Transcription runs locally on the CPU and costs about one sixth of the
+  recording's length — roughly 10 minutes for an hour of video. The transcript is
+  saved as an `.srt` next to the outputs and reused on later runs.
+- Leave off `--render` to get only `plan.json`, `moments.json` and `summary.md`.
+  Review or hand-edit the plan, then render it:
+  `uv run --project render cliprender out/q3-review/plan.json --root .`
+
+### 4. Pick the moments yourself
 
 ```bash
-git restore -- .beads/config.yaml
-bd dolt pull
-bd list
+uv run --project bot clipbot outline --source path/to/session.mp4 --out out/q3-review/outline.md
 ```
 
-If the diff includes other edits, preserve them and undo only bootstrap's remote
-change. The task list must contain the existing `veb-*` issues and match the team.
-This bootstrap behavior is documented in the
-[Beads 1.3.0 implementation](https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/bootstrap.go).
+`outline.md` is the session as a table of contents: the transcript in 30-second
+blocks with speaker names, then a *Moments skeleton* — a JSON template in the
+`--moments` format (also printed to the terminal). Copy it to `moments.json`, fill
+in the moments you want, and build the reel from those instead of the automatic
+pick:
 
-Already onboarded or using a Git worktree? Run `bd where` to find the active
-`.beads` directory and reuse that database with `bd dolt pull`. Worktrees share
-the primary clone's Beads state; do not initialize a second database or overwrite
-an existing local config. The HTTPS recipe above is for a fresh clone: editing
-YAML alone may not change a remote already stored in an existing Dolt database.
-
-### Verify your setup
-
-After onboarding, run these commands from the repository root:
+```json
+[
+  {"start": "12:30", "end": "13:12", "title": "Why the contract is the only interface",
+   "lines": ["bot/ writes the plan, render/ executes it"]}
+]
+```
 
 ```bash
-bd version
-bd ready --label lane:render
-ffmpeg -version
-ffprobe -version
+uv run --project bot clipbot reel --source path/to/session.mp4 --moments moments.json --render --out out/q3-review/plan.json
 ```
 
-The version commands confirm the tools are available, and `bd ready` lists
-unblocked project tasks (Kyle uses `--label lane:bot`). An empty ready list can
-mean all tasks in your lane are claimed or blocked; use `bd list` and `bd blocked`
-to distinguish that from a setup failure.
+`start` and `end` are seconds or `h:mm:ss` times copied from the outline; they
+snap to caption boundaries. `title` (up to 80 characters) becomes the chapter
+card and the clip's takeaway; `lines` (up to 4) are the card's text. Every
+`clipbot reel` run also writes its own choices to `moments.json` next to
+`plan.json`, so the quickest edit loop is: run, tweak that file, re-run with
+`--moments`.
 
-Before opening a PR, also run the repository's `make check` gate. The current
-gate needs [uv](https://docs.astral.sh/uv/getting-started/installation/), GNU Make,
-and a POSIX shell. Git for Windows supplies Git Bash, but not Make: install a
-[Windows GNU Make build](https://github.com/mbuilov/gnumake-windows), add its
-directory to PATH (name the downloaded executable `make.exe`), and run
-`make check SHELL=sh` from Git Bash. The portable
-Windows check entry point and FFmpeg requirements are being completed in
-`veb-uv0`; the version checks above alone do not replace the PR gate.
+### One clip, or just the summary
 
-### Connect your agent
-
-- **Claude Code:** reads AGENTS.md automatically (through CLAUDE.md). Optional:
-  `bd setup claude --global` so every session starts with the task context loaded.
-- **Codex or Cursor:** the beads hooks are already committed in this repo.
-- **Anything else:** `bd setup --list`, then `bd setup <tool>`. If that adds files
-  to the repo, commit them in a small PR.
-
-Then paste this into your agent (Kyle's lane is `lane:bot`, Ramsey's is `lane:render`):
-
-> You're working in video-editor-bot. Your lane is `lane:<yours>`. Read AGENTS.md
-> and follow it exactly. Start with `bd prime`, then sync and tell me what's ready
-> in your lane.
-
----
-
-## 2. How beads works here (60 seconds)
-
-- Each clone keeps its own copy of the task list: a small database in `.beads/`
-  that git doesn't track.
-- The copies sync through this GitHub repo, on a hidden ref (`refs/dolt/data`)
-  that sits apart from the code branches. Beads also keeps a branch called
-  `__dolt_remote_info__` on GitHub. Leave it alone.
-- Syncing is manual, like git. `bd dolt pull` gets the other side's changes and
-  `bd dolt push` publishes yours. If a push is rejected, pull first, then push again.
-- **Beads doesn't lock anything.** We tested it: when both agents claimed the same
-  task, the *later* claim silently won on the next sync, and the first agent got
-  no error. That's why we use lanes.
-
----
-
-## 3. The collaboration protocol
-
-### Lanes: who owns what
-
-| Lane label | Owned by | Folder it may edit |
-|------------|----------|--------------------|
-| `lane:bot` | Kyle's agent | `bot/` (user request → edit plan) |
-| `lane:render` | Ramsey's agent | `render/` (edit plan → ffmpeg → video file) |
-| `lane:shared` | nobody until a human hands it out | `contract/`, `assets/`, files at the repo root |
-
-- Every task starts with exactly one lane label. Agents only pick work from their own lane.
-- To hand a shared task to an agent, add that agent's lane label to it:
-  `bd label add <id> lane:render`.
-- `contract/` is the one piece of code both lanes share: the edit-plan format.
-  Changing it takes a shared task and a PR the other side reviews.
-- Each lane keeps its own dependency file inside its own folder, so nobody
-  fights over a shared package file.
-
-### The loop: what each agent does for every task
-
-```
-sync → pick from own lane → claim + push → branch → build → PR
-     → other agent reviews → author merges → close task + push
-```
-
-The exact commands are in AGENTS.md, section 2. The step that matters most:
-**claim and push the claim before writing any code.** A claim only counts once
-it's pushed.
-
-### Talking to each other
-
-- To reach the other agent, comment on a task in **its** lane
-  (`bd comments add <their-task-id> "..."`), or create a new task in its lane.
-  Each agent's sync reads the comments on its own lane's open tasks.
-- PRs waiting for review show up in `gh pr list --search "-author:@me"`, which the
-  sync also checks.
-- Humans: say **"sync"** to your agent any time. It pulls, then tells you in three
-  lines what the other agent is doing, what's next, and anything addressed to it.
-
-### Hard rules
-
-- Never push to `main`. GitHub can't block it on a free private repo, so this
-  rule is the only guard.
-- Never edit the other lane's folder, and never resolve a conflict in their files.
-- Never run `bd init` in a clone, turn on `dolt.auto-push`, or `git push --mirror`
-  (that last one deletes the shared task list).
-
----
-
-## 4. Live session runbook
-
-### Before the talk: pre-build
-
-Both lanes stay blocked until the shared groundwork lands (`bd blocked` shows the
-chain). Finish these first:
-
-1. `veb-de2`: Kyle and Ramsey pick the language/runtime, then close the task.
-2. `veb-p12`: the edit-plan contract (schema plus two examples).
-3. `veb-uv0`: `make check` and CI, with one pinned ffmpeg version.
-4. `veb-0ct`: two or three short sample clips.
-5. Split `veb-0rh` (bot) and `veb-2rq` (render) into child tasks of 30 minutes or less
-   (`bd create --parent veb-2rq ...`; children inherit the lane label). Then take the
-   lane label off each parent (`bd label remove veb-2rq lane:render`) so agents pick
-   the small tasks, not the whole feature.
-
-### Pre-flight (10 minutes before going on)
-
-1. Both: `gh auth status`, `bd version`, then `git ls-remote origin` from the clone.
-   SSH users also run `ssh -T git@github.com`; HTTPS users follow the local override
-   setup above.
-2. Both: `git pull`, `bd dolt pull`, `bd list`. The two screens must match.
-3. Round trip: Kyle's agent comments on any open `lane:render` task
-   (`bd list --label lane:render`), for example
-   `bd comments add <id> "preflight ping from Kyle's agent"`, then runs `bd dolt pull`
-   and `bd dolt push`. Ramsey says "sync", and his agent must report the ping. Then do
-   the same the other way, on a `lane:bot` task.
-4. Ask each agent: "What's your lane, and what's the loop?" It should answer from AGENTS.md.
-5. Mark a known-good point: `git tag demo-start`, then `git push origin demo-start`.
-
-### If something goes wrong
-
-| What you see | What to do |
-|--------------|------------|
-| `bd dolt push` rejected ("tip of your current branch is behind") | `bd dolt pull`, then `bd dolt push` |
-| `issue already claimed by …` | It's taken. Pick another task. |
-| A pull prints `auto-merged issue <id>; assignee …` | Two claims collided. The agent that saw it doesn't push, and the humans pick who keeps the task. **If that agent keeps it,** it runs `bd dolt push` and the other agent drops the task at its next sync. **If the other agent keeps it,** the agent that saw the notice runs `bd update <id> --assignee "<other person's git name>"`, then `bd dolt pull` and `bd dolt push`. |
-| `bd ready --label lane:<x>` is empty | `bd blocked` shows what's in the way. Usually a shared task needs finishing or handing out. |
-| A PR has a merge conflict | Its author rebases on `origin/main` and fixes only their own files. |
-| An agent went sideways or crashed | Close its PR. On that person's machine, run `bd unclaim <id>`, then `bd dolt pull` and `bd dolt push`, and start the task over. |
-| Beads sync is broken | Keep coding. Coordinate in PR comments and fix sync after the talk. |
-
----
-
-## 5. Cheat sheet
+`clipbot plan --request "…"` finds the single best 15–120 s window for a request
+and writes a one-clip plan; `clipbot summarize` writes the Markdown summary alone.
 
 ```bash
-bd dolt pull                     # get the other side's task changes
-bd dolt push                     # publish yours (pull first, except right after a claim: see AGENTS.md §2)
-bd ready --label lane:render     # what you can pick up (use your own lane)
-bd blocked                       # what's stuck, and on what
-bd list --status=in_progress     # what's being worked on right now
-bd show <id>                     # details, assignee, dependencies
-bd comments <id>                 # read the conversation on a task
-bd comments add <id> "text"      # add to it
-bd create --title "..." --labels lane:bot --description "..."   # new task in a lane
-bd label add <id> lane:render    # hand a shared task to an agent
-bd unclaim <id>                  # give back a task you hold
-gh pr list --search "-author:@me"   # PRs waiting for your agent's review
-gh pr view <n>                   # a PR's reviewers and approvals
+uv run --project bot clipbot plan --source assets/demo-clip.mp4 --request "the part where I question whether the clip bot will work" --summary --out out/one-clip/plan.json
+uv run --project render cliprender out/one-clip/plan.json --root .
+uv run --project bot clipbot summarize --source assets/demo-clip.mp4 --out out/one-clip/summary.md
 ```
 
-Running two agents on one machine? Give each its own identity first:
-`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`). They share
-one GitHub login, so they can comment on each other's PRs but can't approve them.
+Driving it from an AI agent (Claude Code, Codex, Cursor)? The
+[clipbot skill](.agents/skills/clipbot/SKILL.md) tells it which command answers
+which request and how to check the result.
+
+## How it works
+
+```text
+recording.mp4 ──▶ transcript ──▶ moments ──▶ edit plan ──▶ renderer ──▶ reel.mp4 + clips + summary.md
+                  captions in the   key moments,    contract/          cliprender: ffmpeg
+                  file, a sidecar   chronological,  edit-plan.schema   cuts, burns captions,
+                  .srt or           sentence-       .json (seconds,    draws cards, joins
+                  --transcribe      aligned         cards, outputs)    the pieces
+```
+
+`bot/` (`clipbot`) reads the transcript, picks the moments and writes the plan; it
+never touches ffmpeg. `render/` (`cliprender`) executes the plan and never reads
+the transcript. The **edit plan in [`contract/`](contract/README.md)** is the only
+thing that crosses between them: a JSON file naming the source, the segments to
+keep in seconds, the cards to draw and where the outputs go. That boundary is what
+let two agents from different vendors build the two halves in parallel without
+talking to each other, and it is why you can hand-edit `plan.json` — nudge a cut,
+rewrite a card — and re-render.
+
+## Verify your setup
+
+```bash
+uv run --locked scripts/check.py
+```
+
+Prints `check: OK` after validating the contract examples, running the bot and
+renderer tests and rendering a generated test pattern with your FFmpeg. Same
+command on every OS (`make check` is an alias). Details, per-check runs and the
+`--require-pinned` flag: [docs/checks.md](docs/checks.md).
+
+## Status
+
+| Works today | Next |
+|---|---|
+| Summary reel from a captioned or transcribed recording (`clipbot reel`) | Filler-word and long-pause removal inside clips |
+| Session outline and hand-picked moments (`clipbot outline`, `--moments`) | LLM moment selection by default (today: keyword and density scoring; `--llm` opt-in via the Anthropic API) |
+| One-clip plans for a request; presets `internal`, `linkedin`, `shorts`, `email` | PDF export of the summary |
+| Frame-accurate cuts, burned-in captions, intro/chapter/outro cards, 16:9 or 9:16 | Transitions and music between sections |
+| Executive summary and transcript in Markdown | |
+| Windows, macOS, Linux/ARM; CI runs the gate on Ubuntu and Windows | |
+
+## Contributing
+
+House rules for humans — lanes, beads, the PR protocol, Windows setup — are in
+[CONTRIBUTING.md](CONTRIBUTING.md); the rules the agents follow are in
+[AGENTS.md](AGENTS.md).

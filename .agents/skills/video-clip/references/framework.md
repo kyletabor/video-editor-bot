@@ -23,10 +23,14 @@ plan against the agreed schema and semantic bounds before rendering. Do not add
 service IDs or request metadata to the contract.
 
 Show the cut list and expected duration; offer a local preview when available.
-Invoke the actual documented renderer entry point with that saved plan. Until
-that entry point exists, an authorized one-off edit may use installed FFmpeg
-with an explicit cut list and the same verification rules. That proves the local
-media operation, not that the planned CLI or service has been implemented.
+Render the saved plan with the repository's entry point, from the repository
+root: `uv run --project render cliprender <plan.json> --root .` (add `--overwrite`
+to replace earlier outputs). It validates the plan against the checked-in schema,
+cuts and joins, verifies every output and prints one `id<TAB>path<TAB>seconds`
+row per file; a non-zero exit publishes nothing from that run. Intake for reels,
+outlines and summaries is `uv run --project bot clipbot …` (see the
+[clipbot skill](../../clipbot/SKILL.md)). Do not fall back to hand-written FFmpeg
+commands: that proves a media operation, not the documented CLI.
 
 Keep the source and saved plan unchanged during a render. Record their hashes
 alongside execution results when reproducibility is needed; these are execution
