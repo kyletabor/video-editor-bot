@@ -128,7 +128,11 @@ def render_reel(
     output = workspace / filename
     args = ["-y"]
     for path in inputs:
-        args += ["-i", path]
+        # `concat` consumes one segment at a time, so one decoding thread per input keeps
+        # well ahead of the encoder; the default frame-threaded decoders would each hold a
+        # set of 1080p buffers for inputs that are only waiting their turn. Measured on the
+        # 79-minute recording's 17-input reel: 81 fps versus 73 fps, and far fewer threads.
+        args += ["-threads", "1", "-i", path]
     args += [graph_flag, script, "-map", "[video]"]
     args += ["-map", "[audio]", "-c:a", "aac", "-b:a", "192k"] if audio else ["-an"]
     args += [
