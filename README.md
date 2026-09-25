@@ -16,18 +16,18 @@ them for humans.
 ### Get access
 
 This repo is private. Kyle adds you as a collaborator, and you accept the invite
-from your email or https://github.com/notifications. Then check that
-`git ls-remote git@github.com:kyletabor/video-editor-bot.git` lists branches.
+from your email or https://github.com/notifications. Use either SSH or HTTPS in
+the clone instructions below; SSH keys are optional for HTTPS contributors.
 
 ### What you need
 
 | Need | Check it works |
 |------|----------------|
-| git, with SSH access to GitHub | `ssh -T git@github.com` answers "Hi &lt;you&gt;!" |
+| git, with access to this GitHub repo | SSH: `ssh -T git@github.com`; HTTPS: `gh auth status` after HTTPS login below |
 | GitHub CLI, logged in | `gh auth status` |
-| beads 1.3 or newer | `bd version` |
+| beads 1.3.0 or newer | `bd version` |
 | an AI coding agent | Claude Code, Codex, Cursor, Gemini CLI, Copilot… any of them |
-| ffmpeg | Any recent version for now. We'll pin one version for everyone (task `veb-uv0`). |
+| FFmpeg and ffprobe | `ffmpeg -version` and `ffprobe -version`; use both from the same build. Version policy is tracked in `veb-uv0`. |
 
 ### Install beads
 
@@ -35,26 +35,118 @@ from your email or https://github.com/notifications. Then check that
 |--------------|---------|
 | Linux or macOS | `curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh \| bash` |
 | Windows (Intel / AMD) | In PowerShell: `irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 \| iex` (needs Git for Windows) |
-| Windows on ARM (Snapdragon) | Do everything inside WSL (Ubuntu): the agent, your SSH key, and the clone. Then use the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
+| Windows on ARM (Snapdragon) | Do everything inside WSL (Ubuntu): the agent, GitHub authentication, and the clone. Then use the Linux line. The ARM build of beads for Windows lacks the built-in task database. |
 
 If `bd version` then says "command not found" (on Windows: "is not recognized"),
 add the folder the installer printed to your PATH and open a new terminal.
+On Windows x64 the release installer uses `%LOCALAPPDATA%\Programs\bd` by default;
+if it falls back to a Go install, use the Go binary directory it reports instead.
+
+### Windows tools and PATH
+
+Install [Git for Windows](https://gitforwindows.org/) and the
+[GitHub CLI](https://cli.github.com/), then run the Windows Beads installer above.
+For FFmpeg, choose a Windows build linked from the
+[FFmpeg download page](https://ffmpeg.org/download.html#build-windows), such as
+Gyan's release essentials ZIP. Extract it to a permanent location and locate
+the `bin` directory containing **both** `ffmpeg.exe` and `ffprobe.exe`.
+
+In Windows, search for **Edit environment variables for your account**. Under
+**User variables**, edit **Path**, then add the Beads install directory and the
+FFmpeg `bin` directory as separate entries. Add directories, not executable
+filenames, and keep the existing entries. Open a new terminal (restart your
+agent app too if it still sees the old PATH), then check PowerShell can find them:
+
+```powershell
+Get-Command git, gh, bd, ffmpeg, ffprobe | Select-Object Name, Source
+```
+
+If multiple versions are installed, `Get-Command bd -All` or `Get-Command ffmpeg -All`
+shows which PATH entry wins. On Windows ARM using WSL, install and run these
+tools inside the same WSL environment as the clone and agent.
 
 **On Windows:** the built-in Windows PowerShell 5.1 can't run `cmd1 && cmd2`.
 Run chained commands one at a time, or use PowerShell 7 or Git Bash.
 
 ### Join the project
 
+Choose one clone method. With SSH already configured:
+
 ```bash
+git ls-remote git@github.com:kyletabor/video-editor-bot.git
 git clone git@github.com:kyletabor/video-editor-bot.git
 cd video-editor-bot
-bd bootstrap                       # downloads the shared task list. NOT `bd init`.
-git config beads.role maintainer   # you publish task changes too
-bd list                            # must match what the other person sees
 ```
+
+For HTTPS, run these commands in PowerShell (or another shell):
+
+```powershell
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+gh auth status
+git ls-remote https://github.com/kyletabor/video-editor-bot.git
+git clone https://github.com/kyletabor/video-editor-bot.git
+cd video-editor-bot
+```
+
+Before the first `bd bootstrap`, HTTPS contributors create
+`.beads/config.local.yaml` in this fresh clone:
+
+```powershell
+@'
+sync.remote: "git+https://github.com/kyletabor/video-editor-bot.git"
+dolt.auto-push: false
+'@ | Set-Content -Encoding ascii .beads/config.local.yaml
+git check-ignore -v .beads/config.local.yaml
+```
+
+Keep the `git+https://` prefix: this is the Beads sync URL, separate from Git's
+`origin`. The local file overrides `.beads/config.yaml` and is excluded by
+`.gitignore`; the check must print a matching ignore rule. Do not put credentials
+in either YAML file or change the tracked SSH setting for everyone. Keep
+`dolt.auto-push` off; do not override it with `BD_DOLT_AUTO_PUSH=true`.
 
 Your beads identity is your git name (`git config user.name`). It's stamped on
 every claim and comment, so make sure it's yours.
+
+For either clone method, connect to the **existing shared task database**:
+
+```bash
+git config user.name
+git config beads.role maintainer
+bd bootstrap --dry-run
+```
+
+The preview must select the existing remote task data (`refs/dolt/data`), not
+create an empty database. If authentication fails or it proposes a fresh empty
+database, stop and fix access/configuration. Never run `bd init` in this repo.
+Once the preview is correct:
+
+```bash
+bd bootstrap
+git diff -- .beads/config.yaml
+```
+
+Beads 1.3.0 bootstrap can copy the effective HTTPS URL into tracked
+`.beads/config.yaml`. In this fresh clone, if the diff shows only that generated
+remote-setting change, restore the tracked file; the local override remains:
+
+```bash
+git restore -- .beads/config.yaml
+bd dolt pull
+bd list
+```
+
+If the diff includes other edits, preserve them and undo only bootstrap's remote
+change. The task list must contain the existing `veb-*` issues and match the team.
+This bootstrap behavior is documented in the
+[Beads 1.3.0 implementation](https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/bootstrap.go).
+
+Already onboarded or using a Git worktree? Run `bd where` to find the active
+`.beads` directory and reuse that database with `bd dolt pull`. Worktrees share
+the primary clone's Beads state; do not initialize a second database or overwrite
+an existing local config. The HTTPS recipe above is for a fresh clone: editing
+YAML alone may not change a remote already stored in an existing Dolt database.
 
 ### Verify your setup
 
@@ -62,14 +154,24 @@ After onboarding, run these commands from the repository root:
 
 ```bash
 bd version
-bd ready
+bd ready --label lane:render
 ffmpeg -version
 ffprobe -version
 ```
 
 The version commands confirm the tools are available, and `bd ready` lists
-unblocked project tasks. These checks verify the development setup; the bot's
-implementation progress is tracked in the status table below.
+unblocked project tasks (Kyle uses `--label lane:bot`). An empty ready list can
+mean all tasks in your lane are claimed or blocked; use `bd list` and `bd blocked`
+to distinguish that from a setup failure.
+
+Before opening a PR, also run the repository's `make check` gate. The current
+gate needs [uv](https://docs.astral.sh/uv/getting-started/installation/), GNU Make,
+and a POSIX shell. Git for Windows supplies Git Bash, but not Make: install a
+[Windows GNU Make build](https://github.com/mbuilov/gnumake-windows), add its
+directory to PATH (name the downloaded executable `make.exe`), and run
+`make check SHELL=sh` from Git Bash. The portable
+Windows check entry point and FFmpeg requirements are being completed in
+`veb-uv0`; the version checks above alone do not replace the PR gate.
 
 ### Connect your agent
 
@@ -169,8 +271,9 @@ chain). Finish these first:
 
 ### Pre-flight (10 minutes before going on)
 
-1. Both: `ssh -T git@github.com`, `git ls-remote git@github.com:kyletabor/video-editor-bot.git`,
-   `gh auth status`, `bd version`.
+1. Both: `gh auth status`, `bd version`, then `git ls-remote origin` from the clone.
+   SSH users also run `ssh -T git@github.com`; HTTPS users follow the local override
+   setup above.
 2. Both: `git pull`, `bd dolt pull`, `bd list`. The two screens must match.
 3. Round trip: Kyle's agent comments on any open `lane:render` task
    (`bd list --label lane:render`), for example

@@ -4,6 +4,7 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+/.beads/config.local.yaml
 *.gate.lock*
 
 # Local agent worktrees and personal settings
