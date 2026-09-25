@@ -1,4 +1,4 @@
 interface:
   display_name: "Video Editing and Clipping"
-  short_description: "Framework for uploading videos and cutting selected parts"
-  default_prompt: "Use $video-clip to build device-agnostic video upload, section removal and clip export from the repository framework."
+  short_description: "Edit local videos with source-time cuts and CLI export"
+  default_prompt: "Use $video-clip to select sections from a local video and export the edited clip with the repository's CLI and FFmpeg workflow."
