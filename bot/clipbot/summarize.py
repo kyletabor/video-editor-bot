@@ -120,7 +120,23 @@ def to_markdown(
     else:
         lines.append("- (no summarizable speech found)")
     lines.append("")
-    if plan and plan.get("clips"):
+    reel = (plan or {}).get("output", {}).get("reel") if plan else None
+    if reel and plan.get("clips"):
+        # A reel's clips are its chapters: list them as the viewer will meet them,
+        # with source timestamps so a reader can jump into the full recording.
+        lines += ["## Reel", ""]
+        intro = reel.get("intro")
+        if intro:
+            lines.append(f"Intro: **{intro['title']}** — {' · '.join(intro.get('lines', []))}")
+            lines.append("")
+        for n, c in enumerate(plan["clips"], 1):
+            card = c.get("card") or {}
+            spans = " + ".join(f"{_ts(s['start'])}–{_ts(s['end'])}" for s in c["segments"])
+            why = "; ".join(card.get("lines", []))
+            tail = f" — {why}" if why else ""
+            lines.append(f"{n}. [{spans}] **{card.get('title') or c['takeaway']}**{tail} (`{c['id']}`)")
+        lines.append("")
+    elif plan and plan.get("clips"):
         lines += ["## Clips", ""]
         for c in plan["clips"]:
             spans = " + ".join(f"{_ts(s['start'])}–{_ts(s['end'])}" for s in c["segments"])
