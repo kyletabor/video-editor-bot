@@ -18,6 +18,9 @@ from .media import RenderError, Tools, geometry, inspect_media
 from .reel import MAX_RECOMMENDED_SECONDS, planned_seconds, reel_fps, render_reel, timeline
 
 BOUNDS = {"internal": (15, 120), "linkedin": (15, 90), "shorts": (15, 60), "email": (15, 60)}
+# Containers whose keyframe index makes an input seek land exactly and whose audio timestamps
+# are sample-exact, so a seeked decode yields the same frames and samples as a full decode.
+SEEKABLE_FORMATS = {"mov,mp4,m4a,3gp,3g2,mj2"}
 
 
 class RecoveryError(RenderError):
@@ -141,7 +144,56 @@ def selections(clip, times, durations, origin, video_end):
     return selected, expected, offset, max(tail, 0.001)
 
 
-def filter_graph(selected, origin, video_filter, audio, total_source_samples, burn):
+def decode_window(selected, times, origin, audio, seekable):
+    """Input `-ss`/`-t` flags so FFmpeg reads only the part of the source a clip needs.
+
+    The graph trims by frame index, which is exact but on its own decodes the whole recording
+    for every clip: about five minutes per clip for a 79-minute 1080p session on an 8-core ARM
+    box. With `-copyts`, an input `-ss` keeps every timestamp, the demuxer seeks to the last
+    keyframe at or before the point, and FFmpeg's accurate-seek trim discards decoded frames
+    before it, so the frames reaching the graph start at index `base`. The point is the
+    midpoint between the last unwanted frame and the first wanted one, so tick rounding
+    cannot move a frame across it, and never later than the earliest segment start, so no
+    selected audio is lost. `-t` stops reading a second after the last selected sample.
+    Only MP4-family sources are seeked (see SEEKABLE_FORMATS); other containers keep the
+    full decode. Verification still checks every output frame timestamp either way.
+
+    Returns (flags, base, audio_base): the frame index and the audio sample index, both
+    counted from the common origin, of the first data that reaches the graph.
+    """
+    if not seekable:
+        return [], 0, 0
+    earliest = origin + min(start for _, _, start, _, _ in selected)
+    stop = origin + max(end for _, _, _, end, _ in selected) + 1
+    base = min(first for first, *_ in selected)
+    seek = None
+    while base:
+        midpoint = (times[base - 1] + times[base]) / 2
+        # Keep at least one millisecond from both frames; the graph trims any extra frame.
+        if midpoint <= earliest and times[base] - times[base - 1] >= Fraction(1, 500):
+            seek = midpoint
+            break
+        base -= 1
+    if seek is None:
+        return ["-t", f"{float(stop - origin):.6f}"], 0, 0
+    microseconds = round((seek - origin) * 1_000_000)
+    audio_base = 0
+    if audio:
+        # av_rescale_q(microseconds, 1/1e6, 1/rate) with FFmpeg's round-half-away-from-zero:
+        # the first sample its accurate-seek trim keeps.
+        rate = int(audio["sample_rate"])
+        audio_base = (2 * microseconds * rate + 1_000_000) // 2_000_000
+    flags = [
+        "-ss",
+        f"{microseconds // 1_000_000}.{microseconds % 1_000_000:06d}",
+        "-t",
+        f"{float(stop - origin) - microseconds / 1_000_000:.6f}",
+    ]
+    return flags, base, audio_base
+
+
+def filter_graph(selected, origin, video_filter, audio, burn, base=0, audio_base=0):
+    """Build the graph; `base`/`audio_base` re-base indices when the input was seeked."""
     count = len(selected)
     graph = []
     if count > 1:
@@ -150,7 +202,7 @@ def filter_graph(selected, origin, video_filter, audio, total_source_samples, bu
         source = f"v{i}" if count > 1 else "0:v:0"
         # Frame-index trims avoid FFmpeg rounding fractional seconds to input ticks.
         graph.append(
-            f"[{source}]trim=start_frame={first}:end_frame={stop},settb=AVTB,"
+            f"[{source}]trim=start_frame={first - base}:end_frame={stop - base},settb=AVTB,"
             f"setpts=PTS-({decimal(origin + start - offset)})/TB[{i}v]"
         )
     if count > 1:
@@ -167,19 +219,24 @@ def filter_graph(selected, origin, video_filter, audio, total_source_samples, bu
     sample_count = 0
     if audio:
         rate = int(audio["sample_rate"])
+        ranges = [
+            (math.ceil(start * rate), math.ceil(end * rate)) for _, _, start, end, _ in selected
+        ]
+        # Silence covers any audio gap up to the last selected sample; nothing later is needed.
+        needed = max(stop for _, stop in ranges) - audio_base
         graph.append(
-            f"[0:a:0]asetpts=PTS-({decimal(origin)})/TB,"
+            f"[0:a:0]asetpts=PTS-({decimal(origin + Fraction(audio_base, rate))})/TB,"
             "aresample=async=1:first_pts=0:min_hard_comp=0,"
-            f"apad=whole_len={total_source_samples},atrim=end_sample={total_source_samples}[anorm]"
+            f"apad=whole_len={needed},atrim=end_sample={needed}[anorm]"
         )
         if count > 1:
             graph.append(f"[anorm]asplit={count}" + "".join(f"[a{i}]" for i in range(count)))
-        for i, (_, _, start, end, _) in enumerate(selected):
-            first, stop = math.ceil(start * rate), math.ceil(end * rate)
+        for i, (first, stop) in enumerate(ranges):
             sample_count += stop - first
             source = f"a{i}" if count > 1 else "anorm"
             graph.append(
-                f"[{source}]atrim=start_sample={first}:end_sample={stop},asetpts=PTS-STARTPTS[{i}a]"
+                f"[{source}]atrim=start_sample={first - audio_base}:end_sample={stop - audio_base},"
+                f"asetpts=PTS-STARTPTS[{i}a]"
             )
         graph.append("".join(f"[{i}a]" for i in range(count)) + f"concat=n={count}:v=0:a=1[audio]")
     return ";\n".join(graph), sample_count
@@ -314,6 +371,9 @@ def render_plan(
     data = tools.probe(source)
     video, audio, raw_origin = inspect_media(data)
     origin = number(raw_origin)
+    seekable = data.get("format", {}).get("format_name") in SEEKABLE_FORMATS and Fraction(
+        video["time_base"]
+    ) <= Fraction(1, 1000)
     times, durations = tools.frames(source, video["time_base"])
     last_duration = durations[-1] or (float(times[-1] - times[-2]) if len(times) > 1 else 1 / 24)
     video_end = times[-1] + number(last_duration) - origin
@@ -379,19 +439,21 @@ def render_plan(
                 clip_cues = retime(cues, clip["segments"]) if caption_mode != "none" else []
                 srt = job / "_captions.srt"
                 srt.write_text(format_srt(clip_cues), encoding="utf-8")
-                total_samples = math.ceil(video_end * int(audio["sample_rate"])) if audio else 0
+                window, base, audio_base = decode_window(selected, times, origin, audio, seekable)
                 graph, samples = filter_graph(
                     selected,
                     origin,
                     video_filter,
                     audio,
-                    total_samples,
                     bool(clip_cues) and caption_mode == "burn_in",
+                    base,
+                    audio_base,
                 )
                 script = job / "filters.txt"
                 script.write_text(graph, encoding="utf-8")
                 rendered = job / f"{clip_id}.mp4"
-                args = ["-y", "-copyts", "-i", source, graph_flag, script, "-map", "[video]"]
+                args = ["-y", "-copyts", *window, "-i", source, graph_flag, script]
+                args += ["-map", "[video]"]
                 args += ["-map", "[audio]", "-c:a", "aac", "-b:a", "192k"] if audio else ["-an"]
                 args += [
                     "-c:v",
