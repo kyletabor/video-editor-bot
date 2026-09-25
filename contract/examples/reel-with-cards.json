@@ -1,0 +1,64 @@
+{
+  "version": "1",
+  "source": {
+    "path": "assets/demo-clip.mp4",
+    "duration_seconds": 72,
+    "captions": {
+      "kind": "embedded"
+    }
+  },
+  "output": {
+    "dir": "out/demo-reel",
+    "preset": "internal",
+    "aspect": "16:9",
+    "captions": "burn_in",
+    "reel": {
+      "filename": "reel.mp4",
+      "intro": {
+        "title": "Demo clip: key moments",
+        "lines": [
+          "Recorded 2026-09-25",
+          "2 moments \u00b7 0:38"
+        ],
+        "seconds": 4
+      },
+      "outro": {
+        "title": "That's the demo.",
+        "lines": [
+          "Transcript and summary ship alongside"
+        ],
+        "seconds": 3
+      },
+      "chapter_cards": "auto"
+    }
+  },
+  "clips": [
+    {
+      "id": "clip-01-can-we-use-this-for-our-video-bot",
+      "takeaway": "Can we use this recording for our video bot?",
+      "segments": [
+        {
+          "start": 16.0,
+          "end": 28.0
+        }
+      ],
+      "card": {
+        "title": "Can we use this for our video bot?",
+        "lines": [
+          "Kyle tests the recording format"
+        ],
+        "seconds": 3
+      }
+    },
+    {
+      "id": "clip-02-questioning-the-clip-bot-idea",
+      "takeaway": "I'm really questioning whether Ramsey's idea for a video clip bot is going to work.",
+      "segments": [
+        {
+          "start": 36.0,
+          "end": 52.0
+        }
+      ]
+    }
+  ]
+}

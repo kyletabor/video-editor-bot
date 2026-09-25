@@ -37,6 +37,13 @@ BAD_PLANS = {
     "empty clips": minimal(clips=[]),
     "missing takeaway": minimal(clips=[{"id": "c1", "segments": [{"start": 0, "end": 1}]}]),
     "negative start": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": -1, "end": 1}]}]),
+    # v1.1 reel / card rules
+    "card without title": minimal(output={"dir": "o", "reel": {"intro": {"lines": ["x"]}}}),
+    "card seconds 0": minimal(output={"dir": "o", "reel": {"intro": {"title": "t", "seconds": 0}}}),
+    "card with 5 lines": minimal(output={"dir": "o", "reel": {"intro": {"title": "t", "lines": ["a", "b", "c", "d", "e"]}}}),
+    "reel filename not mp4": minimal(output={"dir": "o", "reel": {"filename": "reel.mov"}}),
+    "unknown reel field": minimal(output={"dir": "o", "reel": {"transition": "dissolve"}}),
+    "clip card without title": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "card": {"lines": ["x"]}}]),
 }
 
 
