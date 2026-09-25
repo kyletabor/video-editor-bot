@@ -1,0 +1,24 @@
+[project]
+name = "clipbot"
+version = "0.1.0"
+description = "video-editor-bot: natural-language request -> validated edit plan (Kyle's lane)"
+requires-python = ">=3.10"
+dependencies = [
+    "jsonschema>=4.20",
+]
+
+[project.scripts]
+clipbot = "clipbot.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clipbot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

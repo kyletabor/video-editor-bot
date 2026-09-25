@@ -19,3 +19,8 @@ Thumbs.db
 # Local pinned check tools and Python caches
 .tools/
 __pycache__/
+
+# build/run outputs
+out/
+.venv/
+.pytest_cache/
