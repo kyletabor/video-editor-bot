@@ -3,6 +3,12 @@
 Research checked: **2026-09-25**. Scope: organic YouTube Shorts, with applicable
 Instagram Reels and TikTok guidance. Prepared for `video-editor-bot`.
 
+Companion guide: [Clip guidelines](../../bot/research/clip-guidelines.md)
+covers digestible excerpts from recorded knowledge-sharing sessions, including
+screen shares and internal distribution. Read its duration and framing guidance
+as project defaults for that context alongside this guide's social-video and
+evaluation guidance.
+
 The project should aim to produce a clear, satisfying clip for a particular
 audience, then learn from its performance. A technically valid export, a good
 edit, and a successful published post are three separate outcomes.
@@ -104,12 +110,16 @@ a full playback are still necessary.
 | Editorial integrity | The clip stands alone, preserves the source's meaning, and delivers its opening promise. | Compare the selection against surrounding source context. |
 | Ending | The payoff remains visible or audible long enough to understand; no unintended sentence or action cutoff. | Watch through the last frame and listen through the last word. |
 
-**Proposed export starting point:** use a 9:16, 1080-by-1920 canvas when the
-source and destination suit it. Treat this as a project preference, not a
-universal platform requirement. Preserve useful source detail; choose another
-layout when a vertical crop would hide the explanation. Do not claim upscaling
-repairs low-quality footage. Codec, bitrate, and frame-rate presets should be
-chosen and validated in the renderer's own implementation work.
+**Proposed project framing defaults:** use a 9:16, 1080-by-1920 canvas for
+vertical social clips when the source and destination suit it. Preserve 16:9
+for screen recordings, slides, code, terminals, or multi-person layouts when
+cropping would hide essential detail, as described in the companion guide.
+Choose framing for the content and destination; these are project defaults,
+not universal platform requirements or success rules. A landscape export does
+not become a YouTube Short just because it is brief; see the format criteria
+above. Do not claim upscaling repairs low-quality footage. Codec, bitrate, and
+frame-rate presets should be chosen and validated in the renderer's own
+implementation work.
 
 ## How to tell whether a published short succeeds
 
