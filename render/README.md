@@ -217,6 +217,10 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   full decode per clip made a 79-minute session cost about five minutes per clip here. All 92 tests
   pass on 7.0.2 with this active; the 4.4 status is the same 87 of 92. Other containers keep the
   full decode. If this ever looks wrong for a source, `SEEKABLE_FORMATS` is the switch.
+- **Threaded frame probe** (`Tools.frames`): ffprobe decodes on one thread by default, so the
+  one full pass that lists every source frame took about seventeen minutes for the 79-minute
+  recording; `-threads 0` brings it to about six. The frame list is byte-identical on 4.4.2 and
+  7.0.2 (threading only pipelines decoding).
 - **Tests**: `tests/test_cards.py` (drawing, wrapping, footers, timeline modes, frame rate choice)
   and `tests/test_reel.py` (card segment; a 17 s reel from the numbered fixture checked frame by
   frame and pulse by pulse; `chapter_cards` modes; silent source; no-reel regression; failed-reel
