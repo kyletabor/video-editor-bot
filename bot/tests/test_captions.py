@@ -66,3 +66,18 @@ def test_roundtrip():
     cues = [Cue(0.0, 1.5, "a"), Cue(1.5, 3.0, "b")]
     again = parse_srt(cues_to_srt(cues))
     assert [(c.start, c.end, c.text) for c in again] == [(0.0, 1.5, "a"), (1.5, 3.0, "b")]
+
+
+def test_parse_meet_multispeaker_block_drops_separators_and_empty_speaker():
+    """Regression (talk2 recording): Meet appends other voices after a bare '-' line and
+    an empty '()' speaker inside one cue; neither may leak into the text."""
+    text = (
+        "3\n00:00:08,000 --> 00:00:12,000\n(Kyle Tabor)\ncan start. I just figured out I'm still\n-\n\n"
+        "(Ramsey Jamoul)\nOh,\n-\n\n()\nAnd Jim joined\n\n"
+        "4\n00:00:12,000 --> 00:00:16,000\n()\nat the original video and pull out\n"
+    )
+    cues = parse_srt(text)
+    assert [(c.speaker, c.text) for c in cues] == [
+        ("Kyle Tabor", "can start. I just figured out I'm still"),
+        (None, "at the original video and pull out"),
+    ]

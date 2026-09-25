@@ -161,10 +161,25 @@ def best_windows(
     return out
 
 
+def clean_text(text: str) -> str:
+    """Strip fillers and the debris they leave behind.
+
+    Removing "um" from "So, um, real quick" leaves "So, , real quick"; Meet's
+    multi-speaker captions leave a bare " - " where a second voice was cut
+    (captions.py drops most of them, but SRT files written by older versions
+    still carry them). Both showed up verbatim in card titles, so every title
+    and takeaway goes through here."""
+    text = _FILLER.sub("", text)
+    text = re.sub(r"(?:^|\s)-(?=\s|$)", " ", text)  # " - " separators, not hyphenated words
+    text = re.sub(r"\s*,(?:\s*,)+", ",", text)  # ", ," left by a removed filler
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)  # "quick ," -> "quick,"
+    text = re.sub(r"\s+", " ", text).strip(" ,;:")
+    return text
+
+
 def _one_sentence(text: str, kws: set[str] | None = None, limit: int = 200) -> str:
     """The one sentence in `text` that best matches the request (ties: longer wins)."""
-    text = _FILLER.sub("", text)
-    text = re.sub(r"\s+", " ", text).strip(" ,")
+    text = clean_text(text)
     parts = [p.strip(" ,") for p in re.split(r"(?<=[.!?])\s+", text) if p.strip(" ,")]
     if not parts:
         return "Clip."
