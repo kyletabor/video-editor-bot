@@ -206,9 +206,12 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
     a segment does not start exactly on a frame (most transcript-derived starts). Frame spacing
     is still exact, so verification accepts frame timestamps within 1 ms on such builds instead
     of 5 µs (`MILLISECOND_START` in `renderer.py`); audio start is still checked at 1 ms. This is
-    what let an eight-clip reel from the 79-minute recording render on 4.4.
-  The pinned 7.0.2 from `python scripts/install_ffmpeg.py` passes 96 of 96 and the shared gate
-  uses it automatically. Recommendation for users: run the installer.
+    what let an eight-clip reel from the 79-minute recording render on 4.4. The sub-tick fixture
+    now renders on 4.4 as well, but its test still fails there because it asserts frame times to
+    0.1 ms, which is the precision 7.0.2 delivers and 4.4 cannot.
+  So 4.4.2 passes 91 of the 96 tests. The pinned 7.0.2 from `python scripts/install_ffmpeg.py`
+  passes 96 of 96 and the shared gate uses it automatically. Recommendation for users: run the
+  installer.
 - `scripts/install_ffmpeg.py` works on Python 3.10 (sha256 fallback for `hashlib.file_digest`).
 
 ### Changes tonight (reel, same evening, Kyle's agent) — for Ramsey's review
