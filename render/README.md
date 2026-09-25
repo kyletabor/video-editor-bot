@@ -217,6 +217,13 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   full decode per clip made a 79-minute session cost about five minutes per clip here. All 92 tests
   pass on 7.0.2 with this active; the 4.4 status is the same 87 of 92. Other containers keep the
   full decode. If this ever looks wrong for a source, `SEEKABLE_FORMATS` is the switch.
+- **Captions with blank lines inside a cue** (`captions.parse_srt`): the talk2 recording's
+  embedded Zoom captions separate speakers with blank lines inside one cue, so FFmpeg's SRT
+  extraction (and `video-editor-bot-data/talk2-embedded.srt`) contain index-less blocks that the
+  strict parser rejected ("SRT block 4: expected a numeric index..."), which failed every
+  `captions.kind: embedded` plan on that recording. A block with neither index nor timing line
+  now continues the previous cue (blank line dropped); a first block that is not a cue is still
+  an error, and every existing rejection test still passes. 1,053 cues parse from that file.
 - **Threaded frame probe** (`Tools.frames`): ffprobe decodes on one thread by default, so the
   one full pass that lists every source frame took about seventeen minutes for the 79-minute
   recording; `-threads 0` brings it to about six. The frame list is byte-identical on 4.4.2 and

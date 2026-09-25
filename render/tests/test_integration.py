@@ -381,6 +381,28 @@ def test_burned_subtitles_change_pixels_without_adding_a_subtitle_stream(
     assert not output.with_suffix(".srt").exists()
 
 
+def test_burned_captions_accept_blank_lines_inside_a_cue(tmp_path, media, timing_flags):
+    # The renderer must burn a speaker-separated cue (blank lines inside its text) rather
+    # than reject the file; the written cue must also be accepted by FFmpeg's SRT reader.
+    subtitles = tmp_path / "captions.srt"
+    subtitles.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n(Kyle Tabor)\nFIRST\n-\n\n(Ramsey Jamoul)\nSECOND\n",
+        encoding="utf-8",
+    )
+    plan, output = plan_file(
+        tmp_path,
+        media["source"],
+        [(0, 1)],
+        captions={"kind": "srt", "path": subtitles.as_posix()},
+        mode="burn_in",
+    )
+    assert_success(cli(plan), output)
+    raw = ffmpeg(
+        "-i", output, "-frames:v", "1", *timing_flags, "-pix_fmt", "gray", "-f", "rawvideo", "-"
+    )
+    assert max(raw) - min(raw) > 100
+
+
 def test_burned_captions_stay_aligned_when_the_source_is_seeked(tmp_path, media, timing_flags):
     # An MP4 segment starting after frame 0 is decoded through an input seek; the cue must
     # still land on the frames it belongs to, not shift by the seek offset.

@@ -54,12 +54,27 @@ def _validated(cue: Cue, context: str) -> Cue:
     return Cue(start, end, cue.text)
 
 
+def _starts_cue(lines: list[str]) -> bool:
+    return (
+        len(lines) >= 2
+        and re.fullmatch(r"[0-9]+", lines[0].strip()) is not None
+        and _TIMING.fullmatch(lines[1].strip()) is not None
+    )
+
+
 def parse_srt(text: str) -> list[Cue]:
     """Read numbered SRT blocks, preserving multiline text and subtitle markup.
 
     Empty SRT content represents no cues. Invalid blocks report their one-based
     position rather than being silently skipped. Cue indices need not be
     sequential; timestamps, rather than indices, determine their source times.
+
+    A block that carries neither an index nor a timing line continues the
+    previous cue: meeting recorders (Zoom) embed captions whose text holds blank
+    lines between speakers, and SRT has no way to escape a blank line, so
+    FFmpeg's extraction and hand-written files alike present that text as
+    separate blocks. The blank line itself is dropped from the cue text so the
+    file written for the burn-in filter stays well-formed.
     """
     text = text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     if not text.strip():
@@ -70,6 +85,10 @@ def parse_srt(text: str) -> list[Cue]:
             continue
         lines = block.splitlines()
         context = f"SRT block {position}"
+        if cues and not _starts_cue(lines):
+            previous = cues[-1]
+            cues[-1] = Cue(previous.start, previous.end, previous.text + "\n" + "\n".join(lines))
+            continue
         if len(lines) < 3 or not re.fullmatch(r"[0-9]+", lines[0].strip()):
             raise ValueError(f"{context}: expected a numeric index, timing line, and subtitle text")
         match = _TIMING.fullmatch(lines[1].strip())
