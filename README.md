@@ -38,6 +38,21 @@ bd ready              # you should see the same issues Kyle sees
 `bd bootstrap` is the clone-side command. Never run `bd init` here — the project
 is already initialized and `init` would create a second, disconnected task list.
 
+### Verify your setup
+
+After onboarding, run these commands from the repository root:
+
+```bash
+bd version
+bd ready
+ffmpeg -version
+ffprobe -version
+```
+
+The version commands confirm the tools are available, and `bd ready` lists
+unblocked project tasks. These checks verify the development setup; the bot's
+implementation progress is tracked in the status table below.
+
 ## Onboarding (agents) — paste this into your agent
 
 > You're working in `video-editor-bot`. Read `AGENTS.md` and follow it exactly.
