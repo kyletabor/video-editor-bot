@@ -1,4 +1,4 @@
-"""Validate, render, verify and publish a v1 edit plan without modifying its inputs."""
+"""Validate, render, verify and publish a v1/v1.1 edit plan without modifying its inputs."""
 
 import json
 import math
@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 
 from .captions import Cue, format_srt, parse_srt, retime
 from .media import RenderError, Tools, geometry, inspect_media
+from .reel import MAX_RECOMMENDED_SECONDS, planned_seconds, reel_fps, render_reel, timeline
 
 BOUNDS = {"internal": (15, 120), "linkedin": (15, 90), "shorts": (15, 60), "email": (15, 60)}
 
@@ -286,6 +287,11 @@ def render_plan(
         destinations.append(output / f"{clip['id']}.mp4")
         if caption_mode == "sidecar_srt":
             destinations.append(output / f"{clip['id']}.srt")
+    reel = spec.get("reel")
+    reel_dest = output / reel.get("filename", "reel.mp4") if reel is not None else None
+    if reel_dest:
+        # The same collision rules as clips: a reel named after a clip is rejected below.
+        destinations.append(reel_dest)
     summary_dest = output / summary.name if summary else None
     if summary and summary != summary_dest:
         destinations.append(summary_dest)
@@ -327,6 +333,14 @@ def render_plan(
             warn(
                 f"clip {clip['id']}: speaker tracking is unavailable; using the contract's center fallback"
             )
+    reel_items = timeline(plan, reel) if reel is not None else []
+    if reel is not None:
+        planned_length = planned_seconds(reel_items, plan)
+        if planned_length > MAX_RECOMMENDED_SECONDS:
+            warn(
+                f"reel keeps {float(planned_length):g}s; the contract recommends at most "
+                f"{MAX_RECOMMENDED_SECONDS // 60} minutes"
+            )
     timing_flags = tools.timing_flags()
     container_flags = tools.container_flags()
     graph_flag = tools.graph_flag()
@@ -358,7 +372,7 @@ def render_plan(
                     ]
                 )
                 cues = normalize_embedded(parse_srt(text), origin)
-        files, records = [], []
+        files, records, rendered_clips = [], [], {}
         for clip, (selected, expected, duration, tail), video_filter, dimensions in planned:
             clip_id = clip["id"]
             try:
@@ -416,6 +430,7 @@ def render_plan(
                 target = output / rendered.name
                 files.append((rendered, target))
                 records.append((clip_id, target, actual_duration))
+                rendered_clips[clip_id] = (rendered, actual_duration)
                 if caption_mode == "sidecar_srt":
                     staged_srt = job / f"{clip_id}.srt"
                     shutil.copyfile(srt, staged_srt)
@@ -426,6 +441,28 @@ def render_plan(
                 raise RenderError(
                     f"Clip {clip_id}: {exc}; no outputs from this run published"
                 ) from exc
+        if reel is not None:
+            # One more artifact in the same transaction: cards are drawn at the clips' size,
+            # every segment is conformed to the source's nominal rate, and the reel is verified
+            # before anything, clips included, is published.
+            try:
+                staged_reel, reel_seconds = render_reel(
+                    tools,
+                    job,
+                    reel_items,
+                    rendered_clips,
+                    planned[0][3],
+                    reel_fps(video),
+                    audio,
+                    graph_flag,
+                    tools.cfr_flags(),
+                    reel_dest.name,
+                    reel.get("intro", {}).get("title", reel_dest.stem),
+                )
+            except (RenderError, ValueError, OSError) as exc:
+                raise RenderError(f"Reel: {exc}; no outputs from this run published") from exc
+            files.append((staged_reel, reel_dest))
+            records.append(("reel", reel_dest, reel_seconds))
         if summary and summary != summary_dest:
             staged_summary = job / "summary-copy"
             shutil.copyfile(summary, staged_summary)

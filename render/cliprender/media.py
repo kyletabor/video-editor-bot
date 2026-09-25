@@ -109,6 +109,12 @@ class Tools:
         help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
         return ["-fps_mode", "passthrough"] if "-fps_mode" in help_text else ["-vsync", "0"]
 
+    def cfr_flags(self):
+        """Constant-frame-rate muxing for the reel, whose segments were conformed by `fps`.
+        `-fps_mode` replaced `-vsync` in FFmpeg 5.1; FFmpeg 4.4 only knows `-vsync`."""
+        help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
+        return ["-fps_mode", "cfr"] if "-fps_mode" in help_text else ["-vsync", "cfr"]
+
     def container_flags(self):
         """MP4 muxer timescale flags. `-movie_timescale` arrived in FFmpeg 5.0; FFmpeg 4.4
         (Ubuntu 22.04 / Raspberry Pi) rejects it, so only pass it when the build lists it."""

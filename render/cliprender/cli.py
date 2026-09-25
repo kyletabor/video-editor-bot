@@ -8,7 +8,7 @@ from .renderer import RenderError, render_plan
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Render a contract v1 JSON edit plan")
+    parser = argparse.ArgumentParser(description="Render a contract v1/v1.1 JSON edit plan")
     parser.add_argument("plan", type=Path)
     parser.add_argument("--root", type=Path, help="Repository root for relative plan paths")
     parser.add_argument("--ffmpeg", default="ffmpeg")
