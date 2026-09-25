@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video Editing and Clipping"
+  short_description: "Framework for uploading videos and cutting selected parts"
+  default_prompt: "Use $video-clip to build device-agnostic video upload, section removal and clip export from the repository framework."
