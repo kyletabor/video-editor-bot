@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kyletabor/video-editor-bot/contract/edit-plan.schema.json",
+  "title": "Edit plan",
+  "description": "The interface between bot/ (produces) and render/ (consumes). A plan is one source file, one output spec, and an ordered list of clips. Each clip is a keep-list of time segments from the source, concatenated in order. Nothing else is implied: no effects, no transitions, no re-encoding choices beyond what output.* states.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "source", "output", "clips"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Contract version. Renderer must reject any other value."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to the source video, relative to the repo root or absolute. Forward slashes only; the renderer normalizes for the OS."
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optional. If present the renderer must reject any segment whose end exceeds it."
+        },
+        "captions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["embedded", "srt", "none"],
+              "description": "Where captions come from. embedded = subtitle stream in the source (e.g. Meet mov_text). srt = sidecar file at `path`. none = no captions available."
+            },
+            "path": { "type": "string", "description": "Required when kind = srt." }
+          },
+          "if": { "properties": { "kind": { "const": "srt" } } },
+          "then": { "required": ["path"] }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir"],
+      "properties": {
+        "dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Directory the renderer writes into. Created if missing. Files are named <clip.id>.<container>."
+        },
+        "preset": {
+          "type": "string",
+          "enum": ["internal", "linkedin", "shorts", "email"],
+          "default": "internal",
+          "description": "Destination preset. Sets defaults for aspect and encoding; explicit fields on output override the preset. See bot/research/clip-guidelines.md."
+        },
+        "aspect": {
+          "type": "string",
+          "enum": ["16:9", "9:16", "1:1"],
+          "default": "16:9",
+          "description": "Output frame. 16:9 keeps the source frame. 9:16 and 1:1 center-crop unless a clip sets crop_focus."
+        },
+        "captions": {
+          "type": "string",
+          "enum": ["burn_in", "sidecar_srt", "none"],
+          "default": "burn_in",
+          "description": "burn_in renders captions into the pixels. sidecar_srt writes <clip.id>.srt next to the video. Ignored when source.captions.kind = none."
+        },
+        "container": {
+          "type": "string",
+          "enum": ["mp4"],
+          "default": "mp4"
+        },
+        "max_height": {
+          "type": "integer",
+          "enum": [720, 1080],
+          "default": 1080,
+          "description": "Downscale ceiling. Never upscales."
+        }
+      }
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/clip" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "description": "Optional companion document (executive summary + transcript). Produced by bot/, written here so render/ can copy it into output.dir. See veb-t2b.6.",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "number", "minimum": 0, "description": "Seconds from source start, inclusive." },
+        "end": { "type": "number", "exclusiveMinimum": 0, "description": "Seconds from source start, exclusive. Must be > start." }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "takeaway", "segments"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "description": "Output file stem. Unique within the plan."
+        },
+        "takeaway": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "One sentence: the single idea this clip lands. Used for the title card / filename metadata / summary."
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/segment" },
+          "description": "Keep-list. Rendered in array order and concatenated. Segments may be non-contiguous and out of source order. Total kept duration should stay within the preset's length bounds; the renderer warns but does not reject."
+        },
+        "hook_offset_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Offset within the concatenated clip where the payoff sentence starts. Informational for the renderer (title-card timing); the bot should already have ordered segments so this is 0."
+        },
+        "trim_silence": {
+          "type": "boolean",
+          "default": true,
+          "description": "Renderer may tighten leading/trailing silence at segment boundaries by up to 0.5 s. Never removes speech."
+        },
+        "crop_focus": {
+          "type": "string",
+          "enum": ["center", "left", "right", "speaker"],
+          "default": "center",
+          "description": "Only used when output.aspect is not 16:9. speaker = renderer's best effort; falls back to center."
+        }
+      }
+    }
+  }
+}
