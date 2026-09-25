@@ -1,0 +1,79 @@
+"""clipbot CLI.
+
+    uv run --project bot clipbot plan --source assets/demo-clip.mp4 \
+        --request "the part where I question whether the clip bot will work" \
+        --out out/demo/plan.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import captions as cap
+from . import plan as planmod
+from . import probe as probemod
+from . import select as sel
+
+
+def cmd_plan(a: argparse.Namespace) -> int:
+    info = probemod.probe(a.source)
+    lo, hi = planmod.PRESET_BOUNDS[a.preset]
+    min_s = a.min_seconds if a.min_seconds is not None else lo
+    max_s = a.max_seconds if a.max_seconds is not None else hi
+
+    if a.srt:
+        cues = cap.parse_srt(Path(a.srt).read_text(encoding="utf-8"))
+        captions_kind, srt_path = "srt", a.srt
+    elif info.subtitle_stream_index is not None:
+        cues = cap.parse_srt(cap.extract_embedded_srt(a.source, info.subtitle_stream_index))
+        captions_kind, srt_path = "embedded", None
+    else:
+        print("clipbot: no captions in source and no --srt given; transcription adapter not wired yet (veb-0rh.1)", file=sys.stderr)
+        return 2
+
+    windows = sel.best_windows(cues, a.request, min_s, max_s, max_clips=a.max_clips)
+    if not windows:
+        print("clipbot: nothing matched the request within the length bounds", file=sys.stderr)
+        return 3
+
+    out_path = Path(a.out)
+    plan = planmod.build_plan(
+        info, windows, out_dir=str(out_path.parent), preset=a.preset,
+        captions_kind=captions_kind, srt_path=srt_path,
+    )
+    planmod.validate(plan)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    for c in plan["clips"]:
+        s = c["segments"][0]
+        print(f"{c['id']}\t{s['start']:.1f}-{s['end']:.1f}s\t{c['takeaway']}")
+    print(f"plan written: {out_path}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="clipbot", description="request -> edit plan")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pp = sub.add_parser("plan", help="produce a validated edit plan")
+    pp.add_argument("--source", required=True)
+    pp.add_argument("--request", required=True, help="what the clip should be about")
+    pp.add_argument("--out", default="out/plan.json")
+    pp.add_argument("--preset", default="internal", choices=sorted(planmod.PRESET_BOUNDS))
+    pp.add_argument("--min-seconds", type=float, default=None)
+    pp.add_argument("--max-seconds", type=float, default=None)
+    pp.add_argument("--max-clips", type=int, default=1)
+    pp.add_argument("--srt", default=None, help="sidecar SRT when the source has no captions")
+    pp.set_defaults(fn=cmd_plan)
+    a = p.parse_args(argv)
+    try:
+        return a.fn(a)
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        print(f"clipbot: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
