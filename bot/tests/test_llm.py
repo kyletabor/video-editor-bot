@@ -68,7 +68,7 @@ def test_propose_moments_sends_structured_request_and_validates():
     out = llm.propose_moments("[0:00:00] K: hello.", minutes=4, duration=600, client=client, log=logs.append)
     assert out == [dict(good, start=30.0, end=60.0, score=9.0)]
     req = client.requests[0]
-    assert req["model"] == "claude-opus-5"
+    assert req["model"] == "claude-opus-5-5"
     assert req["output_config"]["format"]["type"] == "json_schema"
     assert req["output_config"]["format"]["schema"] == llm.SCHEMA
     assert req["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in req["betas"]

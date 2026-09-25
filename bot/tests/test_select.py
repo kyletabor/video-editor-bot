@@ -103,3 +103,10 @@ def test_one_sentence_cleans_meet_artifacts():
     assert _one_sentence("So, um, real - quick , we should ship it.") == "So, real quick, we should ship it."
     assert clean_text("state-of-the-art tooling - and then") == "state-of-the-art tooling and then"
     assert clean_text("Um, uh, okay") == "okay"
+
+
+def test_clean_text_keeps_dotted_tokens_and_collapses_filler_commas():
+    from clipbot.select import clean_text
+    assert clean_text("System agnostic: a .exe is not cool") == "System agnostic: a .exe is not cool"
+    assert clean_text("So, um, real quick , we started") == "So, real quick, we started"
+    assert clean_text("keep the .env file") == "keep the .env file"

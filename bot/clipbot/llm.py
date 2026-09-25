@@ -24,7 +24,7 @@ import math
 import os
 from typing import Callable
 
-MODEL = "claude-opus-5"
+MODEL = os.environ.get("CLIPBOT_LLM_MODEL", "claude-opus-5-5")  # Opus 5.5; override per run
 CHUNK_CHARS = 28_000  # ~7-8k tokens of outline text at ~4 chars per token
 MIN_LEN, MAX_LEN = 10.0, 90.0  # a proposal outside this is a model slip, not a moment
 

@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 
 from .captions import Cue
-from .select import _FILLER, _STOP, _WORD, keyword_hits
+from .select import _STOP, _WORD, clean_text, keyword_hits
 
 _DECISION = re.compile(
     r"\b(we should|we need|the goal|decid|agree|requirement|question|problem|"
@@ -34,8 +34,7 @@ def sentences(cues: list[Cue]) -> list[Sentence]:
     buf_start = 0.0
     buf_speaker: str | None = None
     for c in cues:
-        text = _FILLER.sub("", c.text)
-        text = re.sub(r"\s+", " ", text).strip()
+        text = clean_text(c.text)  # fillers and the ", ," / " - " debris they leave
         if not text:
             continue
         if buf and c.speaker != buf_speaker:
