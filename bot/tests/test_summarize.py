@@ -48,3 +48,19 @@ def test_markdown_lists_every_segment_of_a_multi_segment_clip():
     md = to_markdown("Demo", "assets/demo-clip.mp4", 72, DEMO, plan=plan)
     assert "[0:12–0:21 + 0:34–0:41]" in md
     assert "(0:16)" in md  # total kept duration
+
+
+def test_markdown_reel_section_replaces_clips_list():
+    plan = {
+        "output": {"reel": {"intro": {"title": "Demo reel", "lines": ["Recorded 2026-09-25", "2 moments · 0:38"]}}},
+        "clips": [
+            {"id": "clip-01-x", "takeaway": "The doubt.", "segments": [{"start": 36, "end": 52}],
+             "card": {"title": "The doubt", "lines": ["Decision · Kyle Tabor"]}},
+            {"id": "clip-02-y", "takeaway": "The format.", "segments": [{"start": 16, "end": 28}]},
+        ],
+    }
+    md = to_markdown("Demo", "assets/demo-clip.mp4", 72, DEMO, plan=plan)
+    assert "## Reel" in md and "## Clips" not in md
+    assert "Intro: **Demo reel** — Recorded 2026-09-25 · 2 moments · 0:38" in md
+    assert "1. [0:36–0:52] **The doubt** — Decision · Kyle Tabor (" in md and "clip-01-x" in md
+    assert "2. [0:16–0:28] **The format.**" in md

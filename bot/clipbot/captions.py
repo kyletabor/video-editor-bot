@@ -1,7 +1,11 @@
 """Get a timed transcript: embedded subtitle stream -> SRT -> cues.
 
 Meet recordings carry a mov_text stream with 4-second cues and a leading
-"(Speaker Name)" line. That is enough for v1; whisper is a later adapter.
+"(Speaker Name)" line. When two people talk inside the same 4 s window Meet
+appends the other voices after a bare "-" separator line and an empty "()"
+speaker; we keep the primary speaker's words and drop the separators so they
+never leak into takeaways as "real - quick". Whisper output (transcribe.py)
+has no speaker lines at all; speakers.py can add them from Gemini notes.
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
-_SPEAKER = re.compile(r"^\((.+?)\)\s*$")
+_SPEAKER = re.compile(r"^\((.*?)\)\s*$")  # "()" = unknown speaker
 
 
 @dataclass(frozen=True)
@@ -69,8 +73,9 @@ def parse_srt(text: str) -> list[Cue]:
         body = lines[ti + 1:]
         speaker = None
         if body and (m := _SPEAKER.match(body[0])):
-            speaker = m.group(1)
+            speaker = m.group(1).strip() or None
             body = body[1:]
+        body = [ln for ln in body if ln != "-"]  # Meet's multi-speaker separator
         content = " ".join(body).strip()
         if not content or end <= start:
             continue

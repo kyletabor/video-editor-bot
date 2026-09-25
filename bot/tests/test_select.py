@@ -93,3 +93,20 @@ def test_no_match_returns_nothing():
 def test_generic_request_still_picks_something():
     ws = best_windows(DEMO, "make a clip", 15, 45)
     assert len(ws) == 1
+
+
+def test_one_sentence_cleans_meet_artifacts():
+    """Regression (lead's note): Meet multi-speaker separators and filler removal left
+    'real - quick' and 'quick ,' in card titles."""
+    from clipbot.select import _one_sentence, clean_text
+
+    assert _one_sentence("So, um, real - quick , we should ship it.") == "So, real quick, we should ship it."
+    assert clean_text("state-of-the-art tooling - and then") == "state-of-the-art tooling and then"
+    assert clean_text("Um, uh, okay") == "okay"
+
+
+def test_clean_text_keeps_dotted_tokens_and_collapses_filler_commas():
+    from clipbot.select import clean_text
+    assert clean_text("System agnostic: a .exe is not cool") == "System agnostic: a .exe is not cool"
+    assert clean_text("So, um, real quick , we started") == "So, real quick, we started"
+    assert clean_text("keep the .env file") == "keep the .env file"
