@@ -9,6 +9,7 @@ from cliprender.captions import Cue
 from cliprender.media import RenderError, geometry, inspect_media
 from cliprender.renderer import (
     RecoveryError,
+    decode_window,
     load_plan,
     normalize_embedded,
     publish,
@@ -143,6 +144,45 @@ def test_input_cannot_be_overwritten(tmp_path, plan):
     with pytest.raises(RenderError, match="overwrite an input"):
         render_plan(file, root=ROOT, overwrite=True)
     assert source.read_bytes() == b"original source"
+
+
+def test_decode_window_seeks_between_frames_and_never_past_selected_audio():
+    from fractions import Fraction
+
+    times = [Fraction(k, 10) for k in range(60)]  # 10 fps, origin 0
+    audio = {"sample_rate": 48000}
+
+    def selected(*segments):
+        return [
+            (int(s * 10 + 0.999999), int(e * 10 + 0.999999), Fraction(str(s)), Fraction(str(e)), 0)
+            for s, e in segments
+        ]
+
+    # Midpoint 1.25 sits 50 ms from both frames and no later than the segment start.
+    flags, base, audio_base = decode_window(selected((1.25, 1.65)), times, Fraction(0), audio, True)
+    assert flags == ["-ss", "1.250000", "-t", "1.400000"]
+    assert (base, audio_base) == (13, 60000)
+    # A start just after a frame would put the midpoint past it: keep that frame instead.
+    flags, base, audio_base = decode_window(
+        selected((1.2001, 1.6)), times, Fraction(0), audio, True
+    )
+    assert flags[:2] == ["-ss", "1.150000"] and (base, audio_base) == (12, 55200)
+    # Reordered segments seek to the earliest one; a segment from frame 0 only bounds the end.
+    flags, base, _ = decode_window(
+        selected((3.25, 3.65), (1.25, 1.65)), times, Fraction(0), None, True
+    )
+    assert flags == ["-ss", "1.250000", "-t", "3.400000"] and base == 13
+    assert decode_window(selected((0, 1)), times, Fraction(0), audio, True) == (
+        ["-t", "2.000000"],
+        0,
+        0,
+    )
+    # A nonzero origin is subtracted from the flags but kept in the indices.
+    flags, base, audio_base = decode_window(
+        selected((1.25, 1.65)), [t + 5 for t in times], Fraction(5), audio, True
+    )
+    assert flags == ["-ss", "1.250000", "-t", "1.400000"] and (base, audio_base) == (13, 60000)
+    assert decode_window(selected((1.25, 1.65)), times, Fraction(0), audio, False) == ([], 0, 0)
 
 
 def test_preroll_embedded_captions_are_clipped_to_common_origin():

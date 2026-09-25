@@ -381,6 +381,33 @@ def test_burned_subtitles_change_pixels_without_adding_a_subtitle_stream(
     assert not output.with_suffix(".srt").exists()
 
 
+def test_burned_captions_stay_aligned_when_the_source_is_seeked(tmp_path, media, timing_flags):
+    # An MP4 segment starting after frame 0 is decoded through an input seek; the cue must
+    # still land on the frames it belongs to, not shift by the seek offset.
+    subtitles = tmp_path / "captions.srt"
+    subtitles.write_text("1\n00:00:01,500 --> 00:00:02,000\nSEEKED CUE\n", encoding="utf-8")
+    plan, output = plan_file(
+        tmp_path,
+        media["source"],
+        [(1.25, 2.25)],
+        captions={"kind": "srt", "path": subtitles.as_posix()},
+        mode="burn_in",
+    )
+    assert_success(cli(plan), output)
+    raw = ffmpeg(
+        "-i", output, "-map", "0:v:0", *timing_flags, "-pix_fmt", "gray", "-f", "rawvideo", "-"
+    )
+    size = WIDTH * HEIGHT
+    assert len(raw) == 10 * size
+    spans = [
+        max(frame) - min(frame) for frame in (raw[p : p + size] for p in range(0, len(raw), size))
+    ]
+    # Output frames sit at 0.05 s steps of 0.1 s; the cue covers output 0.25-0.75 s.
+    assert [span > 100 for span in spans] == [False, False, True, True, True, True, True] + [
+        False
+    ] * 3
+
+
 @pytest.mark.parametrize("segments", [[(1.201, 1.209)], [(5.9, 8.0)]])
 def test_empty_frame_or_out_of_bounds_selection_writes_nothing(tmp_path, media, segments):
     plan, output = plan_file(tmp_path, media["source"], segments)
