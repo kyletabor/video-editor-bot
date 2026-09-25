@@ -12,6 +12,15 @@ import check
 
 
 class GateTests(unittest.TestCase):
+    def test_default_cli_runs_all_checks(self):
+        called = []
+        with patch.object(sys, "argv", ["check.py", "--require-pinned"]), \
+             patch("check.tool_environment"), patch("check.check_versions") as versions, \
+             patch("check.CHECKS", {"ffmpeg": lambda: called.append("ffmpeg"), "contract": lambda: called.append("contract")}):
+            self.assertEqual(check.main(), 0)
+        self.assertEqual(called, ["ffmpeg", "contract"])
+        versions.assert_called_once_with(require_pinned=True)
+
     def setUp(self):
         self.media = {
             "format": {"duration": "5.0"},

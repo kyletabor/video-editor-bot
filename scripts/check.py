@@ -226,9 +226,14 @@ CHECKS = {
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-pinned", action="store_true", help="require the reference FFmpeg version used by CI")
-    parser.add_argument("checks", nargs="*", choices=[*CHECKS, "all"], default=["all"])
+    # Validate after parsing: Python 3.11/3.12 argparse treats a list default as
+    # a single choice for nargs="*", unlike newer Python versions.
+    parser.add_argument("checks", nargs="*", metavar="CHECK", help="one or more: " + ", ".join([*CHECKS, "all"]))
     args = parser.parse_args()
-    selected = list(CHECKS) if "all" in args.checks else args.checks
+    unknown = set(args.checks) - {*CHECKS, "all"}
+    if unknown:
+        parser.error("unknown check(s): " + ", ".join(sorted(unknown)))
+    selected = list(CHECKS) if not args.checks or "all" in args.checks else args.checks
     tool_environment()
     try:
         if {"assets", "ffmpeg", "bot", "render"}.intersection(selected):
