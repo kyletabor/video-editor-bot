@@ -44,7 +44,7 @@ One command, from the repository root (`uv` builds the virtualenv on first run):
 uv run --project bot clipbot reel --source assets/demo-clip.mp4 --minutes 0.5 --render --out out/demo/plan.json
 ```
 
-About 30 s on an 8-core ARM box. Outputs in `out/demo/`:
+About a minute on an 8-core ARM box. Outputs in `out/demo/`:
 
 | File | What it is |
 |---|---|
@@ -61,7 +61,8 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
 ```
 
 - `--minutes 4` targets a 4-minute reel (±20 %, cards included). 2.5–5 minutes
-  suits a 1–2 hour session.
+  suits a 1–2 hour session. `--title` and `--date` fill the intro card; they
+  default to the file's name and date.
 - No captions in the file? (Meet and Zoom exports usually carry them;
   `ffprobe path/to/session.mp4` lists a subtitle stream if so.) Add `--transcribe`
   and run through the optional `whisper` extra:
@@ -129,8 +130,8 @@ recording.mp4 ──▶ transcript ──▶ moments ──▶ edit plan ──�
 ```
 
 `bot/` (`clipbot`) reads the transcript, picks the moments and writes the plan; it
-never touches ffmpeg. `render/` (`cliprender`) executes the plan and never reads
-the transcript. The **edit plan in [`contract/`](contract/README.md)** is the only
+never cuts a frame. `render/` (`cliprender`) executes the plan and never decides
+what to keep. The **edit plan in [`contract/`](contract/README.md)** is the only
 thing that crosses between them: a JSON file naming the source, the segments to
 keep in seconds, the cards to draw and where the outputs go. That boundary is what
 let two agents from different vendors build the two halves in parallel without
