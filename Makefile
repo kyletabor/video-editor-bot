@@ -3,10 +3,14 @@
 # Requirements: git, python3 + uv (https://docs.astral.sh/uv/), ffprobe.
 # Cross-platform: works on Linux/macOS/Windows (Git Bash or GNU make).
 
-.PHONY: check check-whitespace check-contract check-assets check-render
+.PHONY: check check-whitespace check-contract check-assets check-bot check-render
 
-check: check-whitespace check-contract check-assets check-render
+check: check-whitespace check-contract check-assets check-bot check-render
 	@echo "make check: OK"
+
+# Bot lane (Kyle): unit tests + an end-to-end plan against assets/demo-clip.mp4.
+check-bot:
+	@if [ -d bot ]; then uv run --quiet --project bot pytest -q bot/tests && echo "bot: OK"; else echo "bot: skipped (no bot/ yet)"; fi
 
 check-whitespace:
 	@git diff --check HEAD~1 2>/dev/null || git diff --check
