@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "source": {
+    "path": "assets/demo-clip.mp4",
+    "duration_seconds": 72,
+    "captions": { "kind": "embedded" }
+  },
+  "output": {
+    "dir": "out/demo",
+    "preset": "internal",
+    "aspect": "16:9",
+    "captions": "burn_in"
+  },
+  "clips": [
+    {
+      "id": "clip-01-recording-test",
+      "takeaway": "Kyle tests a Meet recording to have a sample for the clip bot.",
+      "segments": [
+        { "start": 2.0, "end": 30.0 }
+      ]
+    }
+  ]
+}

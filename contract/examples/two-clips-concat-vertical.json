@@ -1,0 +1,36 @@
+{
+  "version": "1",
+  "source": {
+    "path": "assets/demo-clip.mp4",
+    "duration_seconds": 72,
+    "captions": { "kind": "srt", "path": "out/demo/transcript.srt" }
+  },
+  "output": {
+    "dir": "out/demo-shorts",
+    "preset": "shorts",
+    "aspect": "9:16",
+    "captions": "burn_in",
+    "max_height": 1080
+  },
+  "clips": [
+    {
+      "id": "clip-01-bad-hair",
+      "takeaway": "The bad-hair confession, minus the setup.",
+      "segments": [
+        { "start": 12.5, "end": 21.0 },
+        { "start": 34.0, "end": 41.5 }
+      ],
+      "trim_silence": true,
+      "crop_focus": "speaker"
+    },
+    {
+      "id": "clip-02-getting-old",
+      "takeaway": "Getting old, in one line.",
+      "segments": [
+        { "start": 55.0, "end": 70.0 }
+      ],
+      "crop_focus": "center"
+    }
+  ],
+  "summary": { "path": "out/demo-shorts/summary.md" }
+}
