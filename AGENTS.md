@@ -6,7 +6,8 @@ one branch and one PR per task) and **beads** (`bd`: the shared task list, synce
 through this GitHub repo). These rules are the contract, and they override the
 generic beads guidance further down and in `bd prime`. In particular, ignore
 `bd prime`'s generic session-close checklist: close a task only after its PR merges
-(loop step 9), and never push to `main`. README.md explains the same rules for humans.
+(loop step 9), and never push to `main`. CONTRIBUTING.md explains the same rules for
+humans; README.md is about using the tool.
 
 **Profile:** this repo sets `agent.profile: team-maintainer` in `.beads/config.yaml`.
 You may commit to your own branch, push it, open and merge PRs as the loop describes,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clipbot"
+  short_description: "Summary reels, clips and transcripts from a local recording"
+  default_prompt: "Use $clipbot to turn a local recording into a summary reel, an outline, a single clip or a Markdown summary with the repository's clipbot and cliprender CLI."

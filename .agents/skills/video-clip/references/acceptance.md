@@ -49,11 +49,11 @@ exhaustion. Failures must preserve the source and completed results and remove
 only this run's partial artifacts. An explicit re-run must use the intended saved
 plan. Record output and source hashes where reproducibility is being checked.
 
-Run the eventual shared check gate plus relevant integration scenarios for an
-implementation PR. Until `veb-uv0` supplies that gate, report exact checks and the
-missing gate explicitly. For a framework-only PR, validate skill metadata,
-reference links, JSON examples and timeline examples; do not claim these media
-or cross-platform CLI scenarios passed.
+Run the shared check gate (`uv run --locked scripts/check.py`, documented in
+[`docs/checks.md`](../../../../docs/checks.md)) plus relevant integration scenarios
+for an implementation PR, and report the exact checks. For a framework-only PR,
+validate skill metadata, reference links, JSON examples and timeline examples; do
+not claim these media or cross-platform CLI scenarios passed.
 
 ## Optional future web adapter (out of scope for v1)
 
