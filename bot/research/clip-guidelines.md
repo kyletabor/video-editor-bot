@@ -3,6 +3,11 @@
 Bead: `veb-t2b.5`. Owner: Kyle's lane (`bot/`). Feeds the edit-plan contract
 (`veb-p12`) and highlight selection (`veb-0rh.1`).
 
+Companion guide: [Creating short videos and measuring success](../../docs/research/short-video-success.md)
+covers platform evidence (Shorts, Reels, TikTok), output-quality acceptance, and how
+to measure a published clip. Read the two together: this guide sets the editing
+defaults for knowledge-sharing recordings; that one covers social distribution.
+
 Source material: 1–2 hour recorded knowledge-sharing sessions (Meet/Zoom, screen
 shares, Q&A). Audience: busy professionals who will not watch the whole thing.
 
@@ -21,6 +26,9 @@ shares, Q&A). Audience: busy professionals who will not watch the whole thing.
 5. **Keep 16:9 when the screen matters.** Slides, code, terminals, and
    multi-person grids lose essential detail when cropped to 9:16. Only go
    vertical when a single talking head or one focal element fills the frame. [2]
+   Both framings are context-dependent project defaults (16:9 for screen content,
+   9:16 for vertical social clips), not platform requirements or success rules; the
+   contract's `output.preset` picks between them.
 
 ## Length targets by destination
 
