@@ -53,7 +53,12 @@ def platform_key(system: str, machine: str, multiarch: str = "") -> str:
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        if hasattr(hashlib, "file_digest"):  # Python 3.11+
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+        digest = hashlib.sha256()  # Python 3.10 fallback (e.g. Ubuntu 22.04 system python)
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+        return digest.hexdigest()
 
 
 def verify_archive(path: Path, spec: dict) -> None:

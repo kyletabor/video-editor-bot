@@ -328,6 +328,7 @@ def render_plan(
                 f"clip {clip['id']}: speaker tracking is unavailable; using the contract's center fallback"
             )
     timing_flags = tools.timing_flags()
+    container_flags = tools.container_flags()
     graph_flag = tools.graph_flag()
     output.mkdir(parents=True, exist_ok=True)
     with staged_job(output) as job:
@@ -396,10 +397,8 @@ def render_plan(
                     "1:1000000",
                     "-video_track_timescale",
                     "1000000",
-                    "-movie_timescale",
-                    "1000000",
-                    "-bsf:v",
-                    f"setts=pts=PTS:dts=DTS:duration={max(1, round(tail * 1_000_000))}",
+                    *container_flags,
+                    *tools.tail_duration_flags(tail),
                     "-map_metadata",
                     "-1",
                     "-metadata",

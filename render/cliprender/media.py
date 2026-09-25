@@ -109,6 +109,21 @@ class Tools:
         help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
         return ["-fps_mode", "passthrough"] if "-fps_mode" in help_text else ["-vsync", "0"]
 
+    def container_flags(self):
+        """MP4 muxer timescale flags. `-movie_timescale` arrived in FFmpeg 5.0; FFmpeg 4.4
+        (Ubuntu 22.04 / Raspberry Pi) rejects it, so only pass it when the build lists it."""
+        help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
+        return ["-movie_timescale", "1000000"] if "-movie_timescale" in help_text else []
+
+    def tail_duration_flags(self, tail):
+        """Pin the last frame's duration through the `setts` bitstream filter. Its `duration`
+        option arrived in FFmpeg 5.0; FFmpeg 4.4 has no such option, so skip it there (4.4 does
+        not discard the final frame the way FFmpeg 7 can)."""
+        help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "bsf=setts"])
+        if "duration" not in help_text:
+            return []
+        return ["-bsf:v", f"setts=pts=PTS:dts=DTS:duration={max(1, round(tail * 1_000_000))}"]
+
     def graph_flag(self):
         help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
         return (
