@@ -22,6 +22,17 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
     return json.loads(path.read_text())
 
 
+def contract_path(p: str | Path) -> str:
+    """Normalize a user-supplied path for the plan: repo-root-relative POSIX when
+    inside the repo, absolute POSIX otherwise. Never relative to the caller's cwd,
+    because the renderer resolves paths from the repo root (contract/README.md)."""
+    ap = Path(p).expanduser().resolve()
+    try:
+        return ap.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return ap.as_posix()
+
+
 def slug(text: str, limit: int = 40) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:limit].rstrip("-") or "clip"
@@ -36,16 +47,16 @@ def build_plan(
     srt_path: str | None = None,
     summary_path: str | None = None,
 ) -> dict:
-    src: dict = {"path": source.path.replace("\\", "/"), "duration_seconds": round(source.duration_seconds, 3)}
+    src: dict = {"path": contract_path(source.path), "duration_seconds": round(source.duration_seconds, 3)}
     if captions_kind == "srt":
-        src["captions"] = {"kind": "srt", "path": srt_path}
+        src["captions"] = {"kind": "srt", "path": contract_path(srt_path)}
     else:
         src["captions"] = {"kind": captions_kind}
     plan: dict = {
         "version": "1",
         "source": src,
         "output": {
-            "dir": out_dir.replace("\\", "/"),
+            "dir": contract_path(out_dir),
             "preset": preset,
             "aspect": PRESET_ASPECT[preset],
             "captions": "burn_in" if captions_kind != "none" else "none",
@@ -62,7 +73,7 @@ def build_plan(
             }
         )
     if summary_path:
-        plan["summary"] = {"path": summary_path.replace("\\", "/")}
+        plan["summary"] = {"path": contract_path(summary_path)}
     return plan
 
 

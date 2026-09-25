@@ -39,3 +39,12 @@ def test_markdown_has_all_sections_and_clips():
         assert h in md
     assert "clip-01-x" in md and "[0:36–0:52]" in md
     assert "[1:04]" in md  # transcript timestamps
+
+
+def test_markdown_lists_every_segment_of_a_multi_segment_clip():
+    """Regression (monitor): Clips section showed only segments[0]."""
+    plan = {"clips": [{"id": "clip-01-two", "takeaway": "Two parts.",
+                       "segments": [{"start": 12.5, "end": 21}, {"start": 34, "end": 41.5}]}]}
+    md = to_markdown("Demo", "assets/demo-clip.mp4", 72, DEMO, plan=plan)
+    assert "[0:12–0:21 + 0:34–0:41]" in md
+    assert "(0:16)" in md  # total kept duration

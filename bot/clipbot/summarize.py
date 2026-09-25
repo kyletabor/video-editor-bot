@@ -123,8 +123,9 @@ def to_markdown(
     if plan and plan.get("clips"):
         lines += ["## Clips", ""]
         for c in plan["clips"]:
-            seg = c["segments"][0]
-            lines.append(f"- **{c['id']}** [{_ts(seg['start'])}–{_ts(seg['end'])}] — {c['takeaway']}")
+            spans = " + ".join(f"{_ts(s['start'])}–{_ts(s['end'])}" for s in c["segments"])
+            total = sum(s["end"] - s["start"] for s in c["segments"])
+            lines.append(f"- **{c['id']}** [{spans}] ({_ts(total)}) — {c['takeaway']}")
         lines.append("")
     lines += ["## Full transcript", ""]
     last_speaker: str | None = None

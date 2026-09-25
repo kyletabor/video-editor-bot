@@ -38,6 +38,22 @@ def test_build_plan_validates_against_contract():
     assert plan["source"]["captions"] == {"kind": "embedded"}
 
 
+def test_paths_are_repo_root_relative_regardless_of_cwd(tmp_path, monkeypatch):
+    """Regression (monitor): a caller-relative --source from bot/ must not leak into the plan."""
+    from clipbot.plan import contract_path
+
+    monkeypatch.chdir(REPO / "bot")
+    assert contract_path("../assets/demo-clip.mp4") == "assets/demo-clip.mp4"
+    assert contract_path(REPO / "assets" / "demo-clip.mp4") == "assets/demo-clip.mp4"
+    outside = contract_path(tmp_path / "x.mp4")
+    assert Path(outside).is_absolute() and "\\" not in outside
+    info = SourceInfo("../assets/demo-clip.mp4", 72.0, True, True, 0)
+    plan = build_plan(info, [Window(36.0, 52.0, 1.0, "x.", (9,))], "../out/demo", summary_path="../out/demo/summary.md")
+    assert plan["source"]["path"] == "assets/demo-clip.mp4"
+    assert plan["output"]["dir"] == "out/demo"
+    assert plan["summary"]["path"] == "out/demo/summary.md"
+
+
 def test_validate_rejects_segment_past_duration():
     info = SourceInfo("a.mp4", 10.0, True, True, None)
     plan = build_plan(info, [Window(2.0, 12.0, 1.0, "x.", (0,))], "out", captions_kind="none")
