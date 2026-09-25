@@ -1,0 +1,23 @@
+[project]
+name = "cliprender"
+version = "0.1.0"
+description = "Local FFmpeg renderer for the shared v1 edit plan"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.23,<5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+
+[project.scripts]
+cliprender = "cliprender.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
