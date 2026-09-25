@@ -5,3 +5,12 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local agent worktrees and personal settings
+.claude/worktrees/
+.worktrees/
+.claude/settings.local.json
+
+# OS clutter
+.DS_Store
+Thumbs.db
