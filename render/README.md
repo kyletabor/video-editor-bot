@@ -1,7 +1,9 @@
 # Local edit-plan renderer
 
 `cliprender` consumes the repository's [v1 contract](../contract/README.md) and
-writes one H.264/AAC MP4 per clip. Install Python 3.11+, uv, and FFmpeg/ffprobe
+writes one H.264/AAC MP4 per clip; a v1.1 plan with `output.reel` also gets one
+summary video assembled from intro/chapter/outro cards and the clips (see
+[Reel assembly](#reel-assembly-v11)). Install Python 3.11+, uv, and FFmpeg/ffprobe
 with `libx264`, AAC, and (for burned captions) `libass`/the `subtitles` filter.
 Run from the repository root:
 
@@ -41,10 +43,12 @@ After all clips pass verification, stdout reports every newly written file:
 ```text
 clip-id<TAB>/absolute/output/clip-id.mp4<TAB>28.000000
 clip-id<TAB>/absolute/output/clip-id.srt<TAB>28.000000
+reel<TAB>/absolute/output/reel.mp4<TAB>38.041667
 summary<TAB>/absolute/output/summary.md<TAB>0.000000
 ```
 
-SRT rows appear only for `sidecar_srt`. Summary rows have zero duration and appear
+SRT rows appear only for `sidecar_srt`. The `reel` row appears only when the plan
+has `output.reel`; no flag is needed. Summary rows have zero duration and appear
 only when a companion document is copied; a summary already at its destination
 is preserved in place. Warnings and actionable failures go to stderr. Success
 returns 0, failures return 1, and Ctrl-C returns 130. A failed clip names its ID.
@@ -79,6 +83,8 @@ after a failed media job; schema/semantic validation errors create no output.
 | `trim_silence` | Both values retain exact selected ranges. `true` permits tightening but does not require it; this renderer deliberately shaves zero seconds because amplitude alone cannot prove absence of speech. |
 | `takeaway`, `hook_offset_seconds` | Store the takeaway as MP4 title and informational hook offset as MP4 comment. No title-card effect or segment reordering is implied. |
 | `summary.path` | Copy the existing companion document by basename, byte for byte; preserve it if already at its destination. No PDF conversion or summary generation. |
+| `output.reel` (v1.1) | After every clip is verified, draw the cards, conform each segment in one `concat` filter graph, re-encode, verify the reel like a clip and publish `output.dir/<filename>` (default `reel.mp4`) in the same transaction: a reel failure publishes nothing. `chapter_cards`: `auto` shows a card only where a clip has `card`, `all` synthesizes one from `takeaway`, `none` drops chapter cards but keeps intro/outro. Warn above 10 minutes, never reject. A reel named after a clip is rejected as a filename collision. |
+| `reel.intro`, `reel.outro`, `clips[].card` | Full-frame dark slide drawn with Pillow's bundled font at the reel's size: title (at most two rows), up to four lines (two rows each, ellipsized), chapter footer `k of N · h:mm:ss` naming the clip's place and its first segment's source time. Shown for `seconds` (default 3) with silence at the source's sample rate and channel layout; a silent source gives a silent reel. |
 
 Ordinary SDR, progressive video with zero or one mono/stereo audio track is
 supported. Silent input stays silent. Multiple video/audio tracks, surround,
@@ -122,6 +128,40 @@ Frame probing decodes the source and reordered split/interleave graphs can retai
 many frames in memory; very long/high-resolution plans need adequate RAM and disk.
 The timeout bounds process time, not memory consumption.
 
+For MP4-family sources (`mov,mp4,m4a,3gp,3g2,mj2`) each clip's encoder reads only
+the window it needs: an input `-ss` at the midpoint between the last unwanted and
+the first wanted frame, never later than the earliest segment start, and `-t`
+ending one second after the last selected sample. With `-copyts` every timestamp
+is untouched; the demuxer lands on the last keyframe at or before the point and
+FFmpeg's accurate-seek trim drops the decoded frames before it, so the frame-index
+trims and the audio sample indices are simply re-based to the seek point and the
+verification above is unchanged. Without this, a 79-minute 1080p session costs
+about five minutes of decoding per clip on an 8-core ARM box. Other containers
+(Matroska's millisecond timestamps, formats without a keyframe index) keep the
+full decode.
+
+## Reel assembly (v1.1)
+
+The reel is `[intro] + for each clip ([card] + clip) + [outro]`, hard cuts only,
+exactly as the contract's timeline says. Cards are drawn by `cliprender.cards`
+(`Pillow`, bundled font, no font files) at the clips' output size, then encoded
+into segments of exactly `seconds` at the reel's frame rate, paired with generated
+silence. `cliprender.reel` feeds every segment through one `concat` filter graph
+that scales/pads to the first clip's geometry, conforms to the source's nominal
+frame rate (`fps=...:start_time=0`, so a clip whose first frame sits after its
+audio start opens with a copy of that frame instead of a hole), resamples to the
+source's sample rate and channel layout, and re-encodes with the clips' settings
+(H.264 CRF 18 veryfast, yuv420p, AAC 192 kbit/s, fast start), constant frame rate.
+
+Why not the concat demuxer with stream copy: it is faster, but it needs
+bit-identical codec parameters and inherits each segment's AAC priming and
+timescale quirks at every junction, and those behave differently on FFmpeg 4.4 and
+7. Re-encoding gives one continuous timeline whose duration is the sum of its
+parts; verification checks stream counts, geometry, that every stream's duration
+is within 0.2 s per segment of that sum, audio start and channels, and a full
+`-xerror` decode. The reel is staged and published with the clips; a failed reel
+publishes nothing from the run. The reel title metadata is the intro title.
+
 ## Development and measured checks
 
 ```sh
@@ -155,10 +195,62 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
 
 - **FFmpeg 4.4 compatibility.** `-movie_timescale` and the `setts` bitstream filter's `duration`
   option are FFmpeg 5.0+; both now go through capability checks in `Tools` (`container_flags`,
-  `tail_duration_flags`), matching the existing `timing_flags` / `graph_flag` pattern. Result on
-  Kyle's ARM Ubuntu 22.04 box: ffmpeg 4.4.2 passes 73 of 78 tests; the five that still fail are
-  sub-frame edge fixtures (adjacent half-open ranges, sub-tick boundaries, delayed audio origin,
-  variable frame rate, reordered sidecar cues) whose output verification is stricter than 4.4 can
-  deliver. The pinned 7.0.2 from `python scripts/install_ffmpeg.py` passes 78 of 78 and the shared
-  gate uses it automatically. Recommendation for users: run the installer.
+  `tail_duration_flags`), matching the existing `timing_flags` / `graph_flag` pattern. What 4.4
+  still cannot do, measured on Kyle's ARM Ubuntu 22.04 box against the 96 tests below:
+  - Its `interleave` filter drops the last queued frame at EOF, so every **multi-segment** clip
+    comes out one frame short and fails verification (four fixtures: adjacent half-open ranges,
+    delayed audio origin, variable frame rate, reordered sidecar cues). Single-segment clips are
+    unaffected. Not worked around; use 7.0.2 for plans with several segments per clip.
+  - Without `-movie_timescale` the MP4 edit list that delays a clip's first frame is written in
+    the default millisecond movie timescale, so the video track lands up to 1 ms early whenever
+    a segment does not start exactly on a frame (most transcript-derived starts). Frame spacing
+    is still exact, so verification accepts frame timestamps within 1 ms on such builds instead
+    of 5 µs (`MILLISECOND_START` in `renderer.py`); audio start is still checked at 1 ms. This is
+    what let an eight-clip reel from the 79-minute recording render on 4.4. The sub-tick fixture
+    now renders on 4.4 as well, but its test still fails there because it asserts frame times to
+    0.1 ms, which is the precision 7.0.2 delivers and 4.4 cannot.
+  So 4.4.2 passes 91 of the 96 tests. The pinned 7.0.2 from `python scripts/install_ffmpeg.py`
+  passes 96 of 96 and the shared gate uses it automatically. Recommendation for users: run the
+  installer.
 - `scripts/install_ffmpeg.py` works on Python 3.10 (sha256 fallback for `hashlib.file_digest`).
+
+### Changes tonight (reel, same evening, Kyle's agent) — for Ramsey's review
+
+- **Cards** (`cliprender/cards.py`, new dependency `pillow>=10.1,<13`): draws the v1.1 card
+  slides and encodes them as silent segments. See the contract table above for the layout rules.
+- **Reel** (`cliprender/reel.py`, `renderer.py`): `output.reel` assembles the summary video through
+  one `concat` filter graph (why: see [Reel assembly](#reel-assembly-v11)), verifies it and
+  publishes it in the same transaction as the clips. `Tools.cfr_flags()` gates `-fps_mode cfr`
+  versus `-vsync cfr` like the other version checks. The CLI prints one extra `reel` row; plans
+  without a reel are unchanged.
+- **Decode window** (`renderer.decode_window`): MP4-family sources are read with input
+  `-ss`/`-t` under `-copyts`, with frame and sample indices re-based to the seek point, because the
+  full decode per clip made a 79-minute session cost about five minutes per clip here. All 92 tests
+  pass on 7.0.2 with this active; the 4.4 status is the same 87 of 92. Other containers keep the
+  full decode. If this ever looks wrong for a source, `SEEKABLE_FORMATS` is the switch.
+- **Captions with blank lines inside a cue** (`captions.parse_srt`): the talk2 recording's
+  embedded Zoom captions separate speakers with blank lines inside one cue, so FFmpeg's SRT
+  extraction (and `video-editor-bot-data/talk2-embedded.srt`) contain index-less blocks that the
+  strict parser rejected ("SRT block 4: expected a numeric index..."), which failed every
+  `captions.kind: embedded` plan on that recording. A block with neither index nor timing line
+  now continues the previous cue (blank line dropped); a first block that is not a cue is still
+  an error, and every existing rejection test still passes. 1,053 cues parse from that file.
+- **Reel inputs decode on one thread each** (`reel.render_reel`, `-threads 1` per input): `concat`
+  consumes one segment at a time, so a single decoding thread per input outpaces the encoder,
+  while frame-threaded decoders would each hold 1080p buffers for inputs that are only waiting.
+  Measured on the 17-input, 264 s reel from the 79-minute recording (7.0.2): 81 fps versus 73 fps
+  and a 1.7 GB instead of 2.6 GB peak. On this box the whole captioned 8-clip job took 8m49 on
+  FFmpeg 4.4.2 (probe about 3 min, clips about 4 min, reel about 1.5 min); a run whose reel
+  phase overlapped the full test suite and the gate took 32 min because the box swapped, so
+  give a reel about 2 GB of free memory.
+- **Threaded frame probe** (`Tools.frames`): ffprobe decodes on one thread by default, so the
+  one full pass that lists every source frame took about seventeen minutes for the 79-minute
+  recording; `-threads 0` brings it to about six. The frame list is byte-identical on 4.4.2 and
+  7.0.2 (threading only pipelines decoding).
+- **Tests**: `tests/test_cards.py` (drawing, wrapping, footers, timeline modes, frame rate choice)
+  and `tests/test_reel.py` (card segment; a 17 s reel from the numbered fixture checked frame by
+  frame and pulse by pulse; `chapter_cards` modes; silent source; no-reel regression; failed-reel
+  transaction; filename collision). `tests/conftest.py` re-exports the integration fixtures.
+  Acceptance: `uv run --project render cliprender contract/examples/reel-with-cards.json --root .`
+  writes `out/demo-reel/reel.mp4`, 38.04 s, 1920 × 1080 at 24 fps, one H.264 video and one AAC
+  audio stream, plus the two clips, on both FFmpeg 4.4.2 and 7.0.2.

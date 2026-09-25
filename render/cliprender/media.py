@@ -72,12 +72,18 @@ class Tools:
         if time_base is None:
             video = next(s for s in self.probe(path)["streams"] if s["codec_type"] == "video")
             time_base = video["time_base"]
+        # ffprobe decodes on one thread unless told otherwise; `-threads 0` lets the decoder
+        # use every core. Threading only pipelines decoding: the frame list and timestamps are
+        # byte-identical (checked on FFmpeg 4.4.2 and 7.0.2), the probe of a 79-minute 1080p
+        # recording just takes about six minutes instead of seventeen on an 8-core ARM box.
         data = json.loads(
             self.run(
                 [
                     self.ffprobe,
                     "-v",
                     "error",
+                    "-threads",
+                    "0",
                     "-select_streams",
                     "v:0",
                     "-show_frames",
@@ -108,6 +114,12 @@ class Tools:
     def timing_flags(self):
         help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
         return ["-fps_mode", "passthrough"] if "-fps_mode" in help_text else ["-vsync", "0"]
+
+    def cfr_flags(self):
+        """Constant-frame-rate muxing for the reel, whose segments were conformed by `fps`.
+        `-fps_mode` replaced `-vsync` in FFmpeg 5.1; FFmpeg 4.4 only knows `-vsync`."""
+        help_text = self.run([self.ffmpeg, "-hide_banner", "-h", "full"])
+        return ["-fps_mode", "cfr"] if "-fps_mode" in help_text else ["-vsync", "cfr"]
 
     def container_flags(self):
         """MP4 muxer timescale flags. `-movie_timescale` arrived in FFmpeg 5.0; FFmpeg 4.4

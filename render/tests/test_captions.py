@@ -49,6 +49,26 @@ def test_parse_rejects_extremely_large_nonfinite_time():
         parse_srt(f"1\n{'9' * 400}:00:00,000 --> {'9' * 401}:00:00,000\nText")
 
 
+def test_parse_continues_a_cue_across_blank_lines_inside_its_text():
+    # Zoom-style embedded captions separate speakers with blank lines inside one cue; the
+    # extracted SRT therefore has index-less blocks that belong to the cue before them.
+    source = (
+        "1\n00:00:08,000 --> 00:00:12,000\n(Kyle Tabor)\ncan start.\n-\n\n"
+        "(Ramsey Jamoul)\nOh,\n-\n\n()\nAnd Jim joined\n\n"
+        "2\n00:00:12,000 --> 00:00:16,000\nlate.\n"
+    )
+    cues = parse_srt(source)
+    assert cues == [
+        Cue(8, 12, "(Kyle Tabor)\ncan start.\n-\n(Ramsey Jamoul)\nOh,\n-\n()\nAnd Jim joined"),
+        Cue(12, 16, "late."),
+    ]
+    assert parse_srt(format_srt(cues)) == cues
+    # A continuation whose first line is a number is still not mistaken for a new cue.
+    assert parse_srt("1\n00:00:01,000 --> 00:00:02,000\nA\n\n2 people\njoined\n") == [
+        Cue(1, 2, "A\n2 people\njoined")
+    ]
+
+
 def test_format_roundtrips_multiline_and_over_hour_times():
     cues = [Cue(1.125, 2.25, "Hello\nworld"), Cue(360000.001, 360001.999, "Long video")]
     result = format_srt(cues)
