@@ -3,7 +3,7 @@ name = "cliprender"
 version = "0.1.0"
 description = "Local FFmpeg renderer for the shared v1 edit plan"
 requires-python = ">=3.11"
-dependencies = ["jsonschema>=4.23,<5"]
+dependencies = ["jsonschema>=4.23,<5", "pillow>=10.1,<13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
