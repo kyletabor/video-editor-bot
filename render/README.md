@@ -150,3 +150,15 @@ Sample runs redirect paths to `render/test-output/`; the second uses captions
 extracted from the sample and a small companion-document fixture to verify copying.
 These are renderer checks. They do not claim the separate full bot acceptance
 task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
+
+## Changes on 2026-09-25 evening (Kyle's agent, under Kyle's authority)
+
+- **FFmpeg 4.4 compatibility.** `-movie_timescale` and the `setts` bitstream filter's `duration`
+  option are FFmpeg 5.0+; both now go through capability checks in `Tools` (`container_flags`,
+  `tail_duration_flags`), matching the existing `timing_flags` / `graph_flag` pattern. Result on
+  Kyle's ARM Ubuntu 22.04 box: ffmpeg 4.4.2 passes 73 of 78 tests; the five that still fail are
+  sub-frame edge fixtures (adjacent half-open ranges, sub-tick boundaries, delayed audio origin,
+  variable frame rate, reordered sidecar cues) whose output verification is stricter than 4.4 can
+  deliver. The pinned 7.0.2 from `python scripts/install_ffmpeg.py` passes 78 of 78 and the shared
+  gate uses it automatically. Recommendation for users: run the installer.
+- `scripts/install_ffmpeg.py` works on Python 3.10 (sha256 fallback for `hashlib.file_digest`).
