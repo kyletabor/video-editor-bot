@@ -235,6 +235,14 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   `captions.kind: embedded` plan on that recording. A block with neither index nor timing line
   now continues the previous cue (blank line dropped); a first block that is not a cue is still
   an error, and every existing rejection test still passes. 1,053 cues parse from that file.
+- **Reel inputs decode on one thread each** (`reel.render_reel`, `-threads 1` per input): `concat`
+  consumes one segment at a time, so a single decoding thread per input outpaces the encoder,
+  while frame-threaded decoders would each hold 1080p buffers for inputs that are only waiting.
+  Measured on the 17-input, 264 s reel from the 79-minute recording (7.0.2): 81 fps versus 73 fps
+  and a 1.7 GB instead of 2.6 GB peak. On this box the whole captioned 8-clip job took 8m49 on
+  FFmpeg 4.4.2 (probe about 3 min, clips about 4 min, reel about 1.5 min); a run whose reel
+  phase overlapped the full test suite and the gate took 32 min because the box swapped, so
+  give a reel about 2 GB of free memory.
 - **Threaded frame probe** (`Tools.frames`): ffprobe decodes on one thread by default, so the
   one full pass that lists every source frame took about seventeen minutes for the 79-minute
   recording; `-threads 0` brings it to about six. The frame list is byte-identical on 4.4.2 and
