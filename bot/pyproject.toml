@@ -7,6 +7,11 @@ dependencies = [
     "jsonschema>=4.20",
 ]
 
+[project.optional-dependencies]
+# Both are opt-in: `clipbot plan` on a captioned Meet recording needs neither.
+whisper = ["faster-whisper>=1.2"]  # --transcribe (clipbot/transcribe.py)
+llm = ["anthropic>=1.0"]  # clipbot reel --llm (clipbot/llm.py)
+
 [project.scripts]
 clipbot = "clipbot.cli:main"
 
@@ -22,3 +27,4 @@ packages = ["clipbot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: real whisper inference; runs only with FASTER_WHISPER_TEST=1 and the whisper extra"]
