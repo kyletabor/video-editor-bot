@@ -242,7 +242,24 @@ def filter_graph(selected, origin, video_filter, audio, burn, base=0, audio_base
     return ";\n".join(graph), sample_count
 
 
-def verify(tools, path, dimensions, audio, expected, requested_duration, tail, samples):
+EXACT_TIMESTAMP = 0.000005
+# Without `-movie_timescale` (FFmpeg 4.4) the MP4 edit list that delays a clip's first frame is
+# expressed in the default millisecond movie timescale, so the whole video track lands up to
+# one millisecond early. Frame spacing stays exact; only the presentation start is quantized.
+MILLISECOND_START = 0.001 + EXACT_TIMESTAMP
+
+
+def verify(
+    tools,
+    path,
+    dimensions,
+    audio,
+    expected,
+    requested_duration,
+    tail,
+    samples,
+    timestamp_tolerance=EXACT_TIMESTAMP,
+):
     data = tools.probe(path)
     videos = [s for s in data["streams"] if s["codec_type"] == "video"]
     audios = [s for s in data["streams"] if s["codec_type"] == "audio"]
@@ -252,7 +269,9 @@ def verify(tools, path, dimensions, audio, expected, requested_duration, tail, s
     if (video["width"], video["height"]) != dimensions:
         raise RenderError("Verification failed: output dimensions differ")
     actual, _ = tools.frames(path, video["time_base"])
-    if len(actual) != len(expected) or any(abs(a - e) > 0.000005 for a, e in zip(actual, expected)):
+    if len(actual) != len(expected) or any(
+        abs(a - e) > timestamp_tolerance for a, e in zip(actual, expected)
+    ):
         raise RenderError(
             "Verification failed: retained video frame count/timestamps differ from the plan"
         )
@@ -487,7 +506,15 @@ def render_plan(
                 ]
                 tools.encode(args, cwd=job)
                 actual_duration = verify(
-                    tools, rendered, dimensions, audio, expected, duration, tail, samples
+                    tools,
+                    rendered,
+                    dimensions,
+                    audio,
+                    expected,
+                    duration,
+                    tail,
+                    samples,
+                    EXACT_TIMESTAMP if container_flags else MILLISECOND_START,
                 )
                 target = output / rendered.name
                 files.append((rendered, target))

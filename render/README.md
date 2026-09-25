@@ -195,12 +195,20 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
 
 - **FFmpeg 4.4 compatibility.** `-movie_timescale` and the `setts` bitstream filter's `duration`
   option are FFmpeg 5.0+; both now go through capability checks in `Tools` (`container_flags`,
-  `tail_duration_flags`), matching the existing `timing_flags` / `graph_flag` pattern. Result on
-  Kyle's ARM Ubuntu 22.04 box: ffmpeg 4.4.2 passes 87 of the 92 tests below; the five that still
-  fail are sub-frame edge fixtures (adjacent half-open ranges, sub-tick boundaries, delayed audio
-  origin, variable frame rate, reordered sidecar cues) whose output verification is stricter than
-  4.4 can deliver. The pinned 7.0.2 from `python scripts/install_ffmpeg.py` passes 92 of 92 and the
-  shared gate uses it automatically. Recommendation for users: run the installer.
+  `tail_duration_flags`), matching the existing `timing_flags` / `graph_flag` pattern. What 4.4
+  still cannot do, measured on Kyle's ARM Ubuntu 22.04 box against the 96 tests below:
+  - Its `interleave` filter drops the last queued frame at EOF, so every **multi-segment** clip
+    comes out one frame short and fails verification (four fixtures: adjacent half-open ranges,
+    delayed audio origin, variable frame rate, reordered sidecar cues). Single-segment clips are
+    unaffected. Not worked around; use 7.0.2 for plans with several segments per clip.
+  - Without `-movie_timescale` the MP4 edit list that delays a clip's first frame is written in
+    the default millisecond movie timescale, so the video track lands up to 1 ms early whenever
+    a segment does not start exactly on a frame (most transcript-derived starts). Frame spacing
+    is still exact, so verification accepts frame timestamps within 1 ms on such builds instead
+    of 5 µs (`MILLISECOND_START` in `renderer.py`); audio start is still checked at 1 ms. This is
+    what let an eight-clip reel from the 79-minute recording render on 4.4.
+  The pinned 7.0.2 from `python scripts/install_ffmpeg.py` passes 96 of 96 and the shared gate
+  uses it automatically. Recommendation for users: run the installer.
 - `scripts/install_ffmpeg.py` works on Python 3.10 (sha256 fallback for `hashlib.file_digest`).
 
 ### Changes tonight (reel, same evening, Kyle's agent) — for Ramsey's review
