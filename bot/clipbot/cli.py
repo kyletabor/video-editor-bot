@@ -218,8 +218,11 @@ def render(plan_path: Path) -> int:
     cmd = [uv, "run", "--project", "render", "cliprender", str(plan_path.resolve()),
            "--root", str(planmod.REPO_ROOT), "--overwrite"]
     print("render: " + subprocess.list2cmdline(cmd), file=sys.stderr)
+    # `uv run --project bot` exports VIRTUAL_ENV=bot/.venv; the nested uv for render/
+    # would warn about it on every run. The renderer must resolve its own venv.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     reel_path = None
-    with subprocess.Popen(cmd, cwd=planmod.REPO_ROOT, stdout=subprocess.PIPE, text=True,
+    with subprocess.Popen(cmd, cwd=planmod.REPO_ROOT, env=env, stdout=subprocess.PIPE, text=True,
                           encoding="utf-8", errors="replace") as proc:
         assert proc.stdout is not None
         for line in proc.stdout:  # stream: clip encodes take a while on a long source
