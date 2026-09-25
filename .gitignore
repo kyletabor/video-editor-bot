@@ -15,3 +15,7 @@
 # OS clutter
 .DS_Store
 Thumbs.db
+
+# Local pinned check tools and Python caches
+.tools/
+__pycache__/
