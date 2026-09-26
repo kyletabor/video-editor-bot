@@ -141,7 +141,7 @@ def cmd_outline(a: argparse.Namespace) -> int:
 
 
 def cmd_reel(a: argparse.Namespace) -> int:
-    minutes = minutes if minutes is not None else 4.0  # target is advisory
+    minutes = a.minutes if a.minutes is not None else 4.0  # target is advisory
     info = probemod.probe(a.source)
     out_path = Path(a.out)
     out_dir = out_path.parent

@@ -84,3 +84,9 @@ def test_cli_end_to_end_on_demo_clip(tmp_path):
     seg = plan["clips"][0]["segments"][0]
     assert seg["start"] <= 36 and seg["end"] >= 48
     assert 15 <= seg["end"] - seg["start"] <= 45
+
+
+def test_missing_source_says_file_not_found(capsys):
+    rc = cli.main(["reel", "--source", "path/to/nope.mp4", "--out", "out/x/plan.json"])
+    assert rc == 1
+    assert "file not found: path/to/nope.mp4" in capsys.readouterr().err
