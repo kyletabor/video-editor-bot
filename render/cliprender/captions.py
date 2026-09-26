@@ -185,4 +185,3 @@ def tidy_for_burn(cues: Iterable[Cue]) -> list[Cue]:
         if text:
             tidy.append(Cue(cue.start, cue.end, text))
     return tidy
-
