@@ -164,3 +164,25 @@ def retime(cues: Iterable[Cue], segments: Iterable[Mapping[str, float]]) -> list
                 )
         offset += duration
     return output
+
+
+_BURN_NOISE = re.compile(r"^\s*(?:\([^)]*\)|-+|\(\))\s*$")
+
+
+def tidy_for_burn(cues: Iterable[Cue]) -> list[Cue]:
+    """Drop caption lines that only make sense in a sidecar file.
+
+    Google Meet's embedded captions put the speaker on its own line, "(Kyle Tabor)",
+    and leave a lone "-" or "()" where a second voice was cut. Burned into the
+    picture those read as stray fragments (seen on the first Talk #2 reel), so the
+    burn-in path removes such lines and skips cues with nothing left. Sidecar SRT
+    keeps the original text so speaker names survive for readers.
+    """
+    tidy = []
+    for cue in cues:
+        lines = [line for line in cue.text.splitlines() if not _BURN_NOISE.match(line)]
+        text = "\n".join(line.strip() for line in lines if line.strip())
+        if text:
+            tidy.append(Cue(cue.start, cue.end, text))
+    return tidy
+

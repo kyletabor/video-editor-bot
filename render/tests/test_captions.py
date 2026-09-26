@@ -170,3 +170,16 @@ def test_retime_validates_segments_even_when_no_cues(segment):
 def test_retime_empty_inputs():
     assert retime([], [{"start": 0, "end": 1}]) == []
     assert retime([Cue(0, 1, "x")], []) == []
+
+
+def test_tidy_for_burn_drops_speaker_tags_and_cut_markers():
+    from cliprender.captions import Cue, tidy_for_burn
+
+    cues = [
+        Cue(0.0, 4.0, "(Kyle Tabor)\nis you would just talk to an agent. -"),
+        Cue(4.0, 8.0, "-\n()\n  "),
+        Cue(8.0, 12.0, "(Ramsey Jamoul)\nI think it was obvious"),
+    ]
+    tidy = tidy_for_burn(cues)
+    assert [c.text for c in tidy] == ["is you would just talk to an agent. -", "I think it was obvious"]
+    assert (tidy[0].start, tidy[0].end) == (0.0, 4.0)
