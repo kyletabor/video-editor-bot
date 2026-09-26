@@ -124,9 +124,9 @@ intro chatter, two clips saying the same thing).
 
 | Symptom | Meaning / what to do |
 |---|---|
-| `clipbot` exits 2: no captions and no `--srt` | Add `--srt <file>` or `--transcribe` (with `--extra whisper`). |
+| `clipbot` exits 1 with `no captions in the source` | Add `--srt <file>` or `--transcribe` (with `--extra whisper`). |
 | `clipbot` exits 3: nothing matched | Widen the request wording or the `--min-seconds`/`--max-seconds` bounds. |
-| `clipbot` exits 1 / `cliprender` exits 1 | Missing file, ffmpeg error or an invalid plan; the message names it. |
+| `clipbot` exits 1 / `cliprender` exits 1 | `file not found: <path>`, an ffmpeg error or an invalid plan; the message names it. |
 | `ffmpeg not found on PATH` | Run the pinned installer, or `brew install ffmpeg` on macOS. |
 | `install with: uv run --project bot --extra whisper …` | The transcription extra is not installed; use that command form. |
 

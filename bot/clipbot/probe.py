@@ -21,7 +21,7 @@ def probe(path: str | Path) -> SourceInfo:
     """Run ffprobe once and summarize. Raises FileNotFoundError / RuntimeError."""
     p = Path(path)
     if not p.is_file():
-        raise FileNotFoundError(p)
+        raise FileNotFoundError(f"file not found: {p}")
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration:stream=index,codec_type",
