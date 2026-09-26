@@ -430,8 +430,8 @@ def test_burned_captions_stay_aligned_when_the_source_is_seeked(tmp_path, media,
     # platform's subtitle renderer rounds the cue edges (Windows CI differs from Linux).
     visible = [span > 100 for span in spans]
     assert visible[:2] == [False, False], visible
-    assert visible[3:7] == [True, True, True, True], visible
-    assert visible[8:] == [False, False], visible
+    assert visible[2:6] == [True, True, True, True], visible  # cue starts on frame 2 everywhere
+    assert visible[8:] == [False, False], visible  # frames 6-7: trailing edge rounds per platform
 
 
 @pytest.mark.parametrize("segments", [[(1.201, 1.209)], [(5.9, 8.0)]])
