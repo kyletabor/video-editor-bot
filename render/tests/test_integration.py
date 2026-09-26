@@ -425,9 +425,13 @@ def test_burned_captions_stay_aligned_when_the_source_is_seeked(tmp_path, media,
         max(frame) - min(frame) for frame in (raw[p : p + size] for p in range(0, len(raw), size))
     ]
     # Output frames sit at 0.05 s steps of 0.1 s; the cue covers output 0.25-0.75 s.
-    assert [span > 100 for span in spans] == [False, False, True, True, True, True, True] + [
-        False
-    ] * 3
+    # A seek-offset bug would shift the cue by ~12 frames, so the interior frames decide the
+    # test; the two boundary frames (2 and 7) may land either way depending on how the
+    # platform's subtitle renderer rounds the cue edges (Windows CI differs from Linux).
+    visible = [span > 100 for span in spans]
+    assert visible[:2] == [False, False], visible
+    assert visible[3:7] == [True, True, True, True], visible
+    assert visible[8:] == [False, False], visible
 
 
 @pytest.mark.parametrize("segments", [[(1.201, 1.209)], [(5.9, 8.0)]])
