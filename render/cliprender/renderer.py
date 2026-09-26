@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from .captions import Cue, format_srt, parse_srt, retime
+from .captions import Cue, format_srt, parse_srt, retime, tidy_for_burn
 from .media import RenderError, Tools, geometry, inspect_media
 from .reel import MAX_RECOMMENDED_SECONDS, planned_seconds, reel_fps, render_reel, timeline
 
@@ -457,7 +457,8 @@ def render_plan(
             try:
                 clip_cues = retime(cues, clip["segments"]) if caption_mode != "none" else []
                 srt = job / "_captions.srt"
-                srt.write_text(format_srt(clip_cues), encoding="utf-8")
+                burn_cues = tidy_for_burn(clip_cues) if caption_mode == "burn_in" else clip_cues
+                srt.write_text(format_srt(burn_cues), encoding="utf-8")
                 window, base, audio_base = decode_window(selected, times, origin, audio, seekable)
                 graph, samples = filter_graph(
                     selected,
