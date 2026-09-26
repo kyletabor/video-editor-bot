@@ -8,7 +8,7 @@ uv run --locked scripts/check.py
 ```
 
 `make check` is an optional alias. GNU make and a POSIX shell are not required
-for the Python entry point. Install Git, Python 3.11 or newer, and
+for the Python entry point. Install Git and uv (uv fetches a suitable Python; the system one may be older), and
 [uv](https://docs.astral.sh/uv/getting-started/installation/). CI uses Python
 3.12.10 and uv 0.8.22. Script dependencies are separate from each lane's project
 and locked in `scripts/check.py.lock`; no root Python project is needed.

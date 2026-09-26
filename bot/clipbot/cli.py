@@ -141,6 +141,7 @@ def cmd_outline(a: argparse.Namespace) -> int:
 
 
 def cmd_reel(a: argparse.Namespace) -> int:
+    minutes = minutes if minutes is not None else 4.0  # target is advisory
     info = probemod.probe(a.source)
     out_path = Path(a.out)
     out_dir = out_path.parent
@@ -151,7 +152,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         print("clipbot: the transcript is empty", file=sys.stderr)
         return 2
 
-    low, _, high = reelmod.target_band(a.minutes)
+    low, _, high = reelmod.target_band(minutes)
     moments: list[reelmod.Moment] = []
     how = "heuristic"
     if a.moments:
@@ -166,10 +167,10 @@ def cmd_reel(a: argparse.Namespace) -> int:
         else:
             try:
                 specs = llm.propose_moments(
-                    outl.transcript_text(cues), minutes=a.minutes, duration=info.duration_seconds,
+                    outl.transcript_text(cues), minutes=minutes, duration=info.duration_seconds,
                     log=lambda msg: print(msg, file=sys.stderr),
                 )
-                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues), a.minutes)
+                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues), minutes)
                 if len(moments) < reelmod.MIN_MOMENTS:
                     raise RuntimeError(f"the model proposed only {len(moments)} usable moments")
                 how = f"llm ({llm.MODEL})"
@@ -177,7 +178,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
                 print(f"llm: {e}; using the heuristic selector", file=sys.stderr)
                 moments = []
     if not moments:
-        moments = reelmod.pick_moments(cues, a.minutes, preset=a.preset)
+        moments = reelmod.pick_moments(cues, minutes, preset=a.preset)
     if not moments:
         print("clipbot: could not find any usable moments", file=sys.stderr)
         return 3
@@ -199,9 +200,13 @@ def cmd_reel(a: argparse.Namespace) -> int:
     for n, m in enumerate(moments, 1):
         print(f"{n}\t[{outl.clock(m.start)}-{outl.clock(m.end)}]\t{m.title}\t{m.why}")
     total = reelmod.runtime(moments)
-    band = "within" if low <= total <= high else "OUTSIDE"
-    print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards "
-          f"({band} {a.minutes:g} min ±20%)")
+    if a.minutes is None and how.startswith("--moments"):
+        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards "
+              "(length follows your moments; pass --minutes for a ±20% target check)")
+    else:
+        band = "within" if low <= total <= high else "OUTSIDE"
+        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards "
+              f"({band} {minutes:g} min ±20%, best effort)")
     print(f"plan written: {out_path}")
     print(f"moments written: {moments_path}")
     print(f"summary written: {summary_path}")
@@ -218,6 +223,8 @@ def render(plan_path: Path) -> int:
     cmd = [uv, "run", "--project", "render", "cliprender", str(plan_path.resolve()),
            "--root", str(planmod.REPO_ROOT), "--overwrite"]
     print("render: " + subprocess.list2cmdline(cmd), file=sys.stderr)
+    print("render: probing the source and cutting clips; on a 1-2 h recording the first clip line "
+          "can take a few minutes and the whole reel about ten", file=sys.stderr)
     # `uv run --project bot` exports VIRTUAL_ENV=bot/.venv; the nested uv for render/
     # would warn about it on every run. The renderer must resolve its own venv.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
@@ -285,7 +292,8 @@ def main(argv: list[str] | None = None) -> int:
 
     pr = sub.add_parser("reel", help="N-minute summary reel plan: intro + chapter cards + moments")
     pr.add_argument("--source", required=True)
-    pr.add_argument("--minutes", type=float, default=4.0, help="target reel length incl. cards (±20 %%)")
+    pr.add_argument("--minutes", type=float, default=None,
+                    help="target reel length incl. cards (±20 %%, best effort; default 4). With --moments the reel is as long as your moments")
     pr.add_argument("--out", default="out/reel/plan.json")
     pr.add_argument("--preset", default="internal", choices=sorted(planmod.PRESET_BOUNDS))
     add_caption_args(pr)
