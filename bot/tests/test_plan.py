@@ -89,4 +89,5 @@ def test_cli_end_to_end_on_demo_clip(tmp_path):
 def test_missing_source_says_file_not_found(capsys):
     rc = cli.main(["reel", "--source", "path/to/nope.mp4", "--out", "out/x/plan.json"])
     assert rc == 1
-    assert "file not found: path/to/nope.mp4" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "file not found: " in err and "nope.mp4" in err, err  # path separators differ on Windows
