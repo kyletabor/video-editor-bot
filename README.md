@@ -61,12 +61,15 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
 ```
 
 - `--minutes 4` targets a 4-minute reel (±20 %, cards included). 2.5–5 minutes
-  suits a 1–2 hour session. `--title` and `--date` fill the intro card; they
-  default to the file's name and date.
+  suits a 1–2 hour session. The target is best effort: the tool prints `within`
+  or `OUTSIDE` the band and renders either way; with `--moments` the reel is as
+  long as your moments. A 1–2 hour 1080p recording takes about ten minutes end
+  to end, and the first clip line appears only after a few minutes of probing.
 - No captions in the file? (Meet and Zoom exports usually carry them;
   `ffprobe path/to/session.mp4` lists a subtitle stream if so.) Add `--transcribe`
   and run through the optional `whisper` extra:
   `uv run --project bot --extra whisper clipbot reel --transcribe --source path/to/session.mp4 --minutes 4 --render --out out/q3-review/plan.json`.
+  The first run downloads the ~145 MB whisper `base` model.
   Transcription runs locally on the CPU and costs about one sixth of the
   recording's length — roughly 10 minutes for an hour of video. The transcript is
   saved as an `.srt` next to the outputs and reused on later runs.
