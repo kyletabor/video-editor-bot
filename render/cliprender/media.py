@@ -2,7 +2,9 @@
 
 import json
 import math
+import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import pairwise
@@ -13,13 +15,34 @@ class RenderError(Exception):
     """An actionable plan, media, process or publication failure."""
 
 
+def warn(message):
+    """Non-fatal advice for the operator; stdout stays reserved for output records."""
+    print(f"cliprender: warning: {message}", file=sys.stderr)
+
+
+def parse_audio_stats(text):
+    """(peak dBFS or None for digital silence, samples per channel) from `astats` log output.
+
+    `astats` prints one block per channel and then an `Overall` block, each with its own
+    `Peak level dB`; the maximum over all of them is the overall peak, whatever the order.
+    """
+    peaks = [float(value) for value in re.findall(r"Peak level dB: (\S+)", text)]
+    counts = re.findall(r"Number of samples: (\d+)", text)
+    if not counts:
+        raise RenderError("astats reported no audio statistics; is there an audio stream?")
+    finite = [peak for peak in peaks if math.isfinite(peak)]
+    return (max(finite) if finite else None), int(counts[-1])
+
+
 @dataclass
 class Tools:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     timeout: float = 1800
 
-    def run(self, args, *, cwd=None):
+    def run(self, args, *, cwd=None, stderr=False):
+        """Run one tool to completion; return its stdout, or its stderr when `stderr` is set
+        (FFmpeg's analysis filters report on stderr and there is no machine-readable channel)."""
         try:
             with subprocess.Popen(
                 [str(a) for a in args],
@@ -45,12 +68,42 @@ class Tools:
         if process.returncode:
             detail = stderr.decode("utf-8", errors="replace")[-5000:].strip()
             raise RenderError(f"{Path(args[0]).name} failed ({process.returncode}): {detail}")
+        if stderr:
+            return stderr.decode("utf-8", errors="replace")
         return stdout.decode("utf-8-sig", errors="replace")
 
     def encode(self, args, *, cwd=None):
         return self.run(
             [self.ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-xerror", *args], cwd=cwd
         )
+
+    def audio_stats(self, path):
+        """Float-accurate peak (dBFS) and sample count of the first audio stream.
+
+        Why not `volumedetect`: it histograms 16-bit samples, so a decoded float above full
+        scale is clipped to 0 dB before it is counted and clipping can never be observed.
+        `astats` works on the decoder's floats and reports the true peak, on FFmpeg 4.4 and 7.
+        """
+        text = self.run(
+            [
+                self.ffmpeg,
+                "-hide_banner",
+                "-nostdin",
+                "-v",
+                "info",
+                "-i",
+                path,
+                "-map",
+                "0:a:0",
+                "-af",
+                "astats",
+                "-f",
+                "null",
+                "-",
+            ],
+            stderr=True,
+        )
+        return parse_audio_stats(text)
 
     def probe(self, path):
         return json.loads(

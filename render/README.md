@@ -3,7 +3,9 @@
 `cliprender` consumes the repository's [v1 contract](../contract/README.md) and
 writes one H.264/AAC MP4 per clip; a v1.1 plan with `output.reel` also gets one
 summary video assembled from intro/chapter/outro cards and the clips (see
-[Reel assembly](#reel-assembly-v11)). Install Python 3.11+, uv, and FFmpeg/ffprobe
+[Reel assembly](#reel-assembly-v11)), and v1.2 adds opening/closing cards, a music
+bed, transitions and audio fades to it (see [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades)).
+Install Python 3.11+, uv, and FFmpeg/ffprobe
 with `libx264`, AAC, and (for burned captions) `libass`/the `subtitles` filter.
 Run from the repository root:
 
@@ -85,6 +87,10 @@ after a failed media job; schema/semantic validation errors create no output.
 | `summary.path` | Copy the existing companion document by basename, byte for byte; preserve it if already at its destination. No PDF conversion or summary generation. |
 | `output.reel` (v1.1) | After every clip is verified, draw the cards, conform each segment in one `concat` filter graph, re-encode, verify the reel like a clip and publish `output.dir/<filename>` (default `reel.mp4`) in the same transaction: a reel failure publishes nothing. `chapter_cards`: `auto` shows a card only where a clip has `card`, `all` synthesizes one from `takeaway`, `none` drops chapter cards but keeps intro/outro. Warn above 10 minutes, never reject. A reel named after a clip is rejected as a filename collision. |
 | `reel.intro`, `reel.outro`, `clips[].card` | Full-frame dark slide drawn with Pillow's bundled font at the reel's size: title (at most two rows), up to four lines (two rows each, ellipsized), chapter footer `k of N · h:mm:ss` naming the clip's place and its first segment's source time. Shown for `seconds` (default 3) with silence at the source's sample rate and channel layout; a silent source gives a silent reel. |
+| `reel.opening[]`, `reel.closing[]` (v1.2) | Cards after the intro and before the outro, drawn like the others but without a chapter footer (they are not chapters). Timeline: `[intro] + opening + Σ([card] + clip) + closing + [outro]`. |
+| `reel.music` (v1.2) | A bed under every run of consecutive cards (`under: cards`, faded at the run edges, continuing through the reel from a running offset) or under the whole reel at `duck_db` beneath speech and `gain_db` beneath cards (`under: all`). Looped when `loop` and the file is shorter than needed. Missing file: rejected before any tool starts. Source without audio: rejected. Never clips: see [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades). |
+| `reel.transition` (v1.2) | `cut` = the v1.1 join. `dip` = video fades to black and back at every join, length unchanged. `dissolve` = `xfade`/`acrossfade` between consecutive segments; the reel shortens by `seconds` per join. Shortened with a warning when a segment cannot hold it. |
+| `reel.audio_fade_seconds` (v1.2) | `afade` in/out on every clip's audio at its edges (at most half the clip). Applies with the 0.15 s default whenever any v1.2 field is present; a plan with no v1.2 field renders exactly as v1.1. |
 
 Ordinary SDR, progressive video with zero or one mono/stereo audio track is
 supported. Silent input stays silent. Multiple video/audio tracks, surround,
@@ -161,6 +167,73 @@ parts; verification checks stream counts, geometry, that every stream's duration
 is within 0.2 s per segment of that sum, audio start and channels, and a full
 `-xerror` decode. The reel is staged and published with the clips; a failed reel
 publishes nothing from the run. The reel title metadata is the intro title.
+
+## Reel v1.2: opening/closing cards, music, transitions, fades
+
+Contract v1.2 adds five optional fields under `output.reel`. A plan that uses none of
+them renders exactly as a v1.1 reel: same command line, same filter graph, byte for
+byte (`cliprender.reel.concat_graph` is unchanged and a test pins its text). As soon
+as one v1.2 field is present, the schema defaults apply to the rest (`transition`
+`cut`, `audio_fade_seconds` 0.15). The timeline becomes
+`[intro] + opening + Σ([card] + clip) + closing + [outro]`; opening and closing cards
+are drawn like the others but carry no `k of N` footer because they are not chapters.
+
+Everything happens inside the one reel filter graph (`cliprender.reel.reel_graph`),
+with filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
+
+- **Audio fades** (`audio_fade_seconds`): `afade` in and out on every clip's audio at
+  its edges, never longer than half the clip. Cards are silent and get none.
+- **Transitions** (`transition`): `cut` keeps the `concat` join. `dip` fades each
+  segment's video to black over half the transition and the next one in from black
+  over the other half (`fade`, inside the segments), so the reel length is unchanged
+  and the audio is untouched. `dissolve` cross-fades consecutive segments with
+  `xfade` (video) and `acrossfade` (audio, triangular curves); the reel shortens by
+  the transition per join and the verification expects exactly that. A transition
+  longer than the segments can hold (a 1 s card with a 1.5 s dissolve is a legal
+  plan) is shortened for the whole reel with a warning: a dip needs every segment
+  at least as long as the transition, a dissolve needs the first and last segment
+  at least that long and every middle segment at least twice that.
+- **Music bed** (`music`): the file is decoded once to a 16-bit WAV at the reel's
+  sample rate and layout (`_reel/bed-once.wav`, bounded by `-t` to what the reel
+  needs) and, when `loop` is on and the bed is shorter than what it must cover,
+  looped sample-exactly with `-stream_loop` into `_reel/bed.wav`. Why a WAV: mp3 and
+  ogg frames carry encoder delay and padding, so looping the compressed file seams
+  with a gap and its probed duration is approximate; a WAV does neither. With
+  `under: cards`, every maximal run of consecutive cards (intro + opening + the first
+  chapter card is one run; closing + outro another) gets one stretch of the bed at
+  `gain_db`, faded in and out over `fade_seconds` (at most half the run), cut with
+  `atrim` from a running offset so the music continues through the reel instead of
+  restarting at each card, placed with `adelay` in samples, and summed onto the
+  speech with `amix normalize=0` (`amix` otherwise divides by the input count and
+  would halve the speech). With `under: all`, one base stretch covers the whole reel
+  at `duck_db` and each card run adds a coherent copy at `gain_db − duck_db` taken
+  from the same bed position, so the sum is exactly `gain_db` under cards, `duck_db`
+  under speech, ramping over `fade_seconds` at the boundaries: two levels, no
+  side-chain, no dynamics processing. If `loop` is off and the bed runs out, the rest
+  is silent and a warning says so. A reel with music but no cards warns and plays
+  none; a source without an audio track is rejected, since there is no reel audio to
+  mix the bed into.
+- **Never clipping**: rather than a limiter (FFmpeg 4.4's `alimiter` delays the
+  audio by its look-ahead and never flushes it; its `latency` option is 5.1+), the
+  mix is kept from clipping by arithmetic (`cliprender.reel.headroom_gain`). The
+  16-bit staging bounds the bed at full scale, so its peak is at most its level; the
+  peak of every clip is measured with `astats`, which reads the decoder's floats
+  (`volumedetect` histograms 16-bit samples, so an over is clipped to 0 dB before it
+  is counted and can never be seen). Music and speech only coincide under
+  `under: all` and across a dissolve; only then, if speech peak plus music level
+  would pass −1 dBFS, is the whole mix lowered by the shortfall, with a warning.
+  Speech that plays alone is never touched, however hot the recording is.
+- **Verification**: a v1.2 reel is additionally decoded with `astats` before the
+  usual full `-xerror` decode: the sample count must match the expected length
+  (the duration math including the dissolve overlap, so the track is continuous
+  with no missing piece) and, when music was mixed in, the true peak must stay under
+  full scale (or under the speech's own peak when the recording is already hotter
+  than that), plus 0.5 dB for AAC quantization.
+
+FFmpeg 4.4 differences: `xfade` emits one frame more over a dissolve chain than 7.0.2
+(83 frames for three 3 s segments at 10 fps versus 82), well inside the 0.2 s per
+segment duration tolerance; `fade`, `afade`, `acrossfade`, `adelay`, `amix`, `astats`
+and `-stream_loop` on WAV measured identical on both builds.
 
 ## Development and measured checks
 
@@ -254,3 +327,32 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   Acceptance: `uv run --project render cliprender contract/examples/reel-with-cards.json --root .`
   writes `out/demo-reel/reel.mp4`, 38.04 s, 1920 × 1080 at 24 fps, one H.264 video and one AAC
   audio stream, plus the two clips, on both FFmpeg 4.4.2 and 7.0.2.
+
+### Changes on 2026-09-26 (Kyle's agent): contract v1.2 in the renderer — for Ramsey's review
+
+- **What**: opening/closing cards, the music bed, `dip`/`dissolve` transitions and clip audio
+  fades, designed as described in [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades).
+  `cliprender/reel.py` gained `Style`/`Music`/`Piece`, `reel_graph`, `stage_bed`,
+  `headroom_gain` and the extended `verify_reel`; `media.py` gained `warn` (moved from
+  `renderer.py` so `reel.py` can warn without a circular import), `Tools.audio_stats` and
+  `parse_audio_stats`; `renderer.py` resolves `music.path` before any tool starts and rejects
+  a silent source with music. A plan without v1.2 fields still produces the v1.1 command line
+  and graph byte for byte.
+- **Tests**: `tests/test_reel_style.py` (8, no tools: the v1.1 graph text pinned, schema defaults,
+  timeline footers, transition clamps, card runs and running offsets, styled graph text, the
+  headroom rule, `astats` parsing) and `tests/test_reel_music.py` (8, real CLI on two generated
+  5 s clips and a generated two-level 8 s bed, mp3 when `libmp3lame` exists: music under every
+  card run at a running offset and none under speech, silent cards without music, `dip` frames,
+  `dissolve` length and blend, `under: all` ducking, `loop: false`, silent source rejected,
+  missing bed rejected before tools start). Counts: FFmpeg 7.0.2 98 → 114 passed; 4.4.2
+  93 → 109 passed with the same five pre-existing multi-segment failures listed above.
+- **Acceptance**: `contract/examples/reel-with-music.json` with `assets/music/bed.mp3` on both
+  builds: 49.07 s (7.0.2) / 49.04 s (4.4.2), 1920 × 1080 at 24 fps, AAC 48 kHz stereo.
+  `volumedetect` (input-side `-ss`/`-t`) over the card runs: mean −38.3 dB, max −27.2 dB (the
+  bed at −18 dB); first 0.3 s max −60 dB and the last 0.4 s of a run max −34 dB (the fades);
+  the clip ranges inside the reel measure identically to the clip files (mean −20.1 dB, max
+  −0.4 dB), so no bed under speech; float peak −0.45 dBFS, the recording's own; the dip shows
+  one black frame and five-frame ramps at 24 fps. Render time on this Pi: 59 s (7.0.2), 85 s
+  (4.4.2). With `gain_db: -18` on the −16.5 LUFS bed the music sits about 18 dB under the
+  speech: clearly there under the cards, but subtle; −12 to −14 dB would be bolder. The
+  contract owns that default.
