@@ -64,3 +64,26 @@ def test_markdown_reel_section_replaces_clips_list():
     assert "Intro: **Demo reel** — Recorded 2026-09-25 · 2 moments · 0:38" in md
     assert "1. [0:36–0:52] **The doubt** — Decision · Kyle Tabor (" in md and "clip-01-x" in md
     assert "2. [0:16–0:28] **The format.**" in md
+
+
+def test_markdown_takeaways_section_comes_from_the_closing_cards():
+    plan = {
+        "output": {"reel": {"intro": {"title": "Demo reel", "lines": []},
+                            "closing": [{"title": "Takeaways", "lines": ["Write the goal down", "Test the format first"]},
+                                        {"title": "Takeaways (continued)", "lines": ["Ship it"]}]}},
+        "clips": [{"id": "clip-01-x", "takeaway": "The doubt.", "segments": [{"start": 36, "end": 52}]}],
+    }
+    md = to_markdown("Demo", "assets/demo-clip.mp4", 72, DEMO, plan=plan)
+    assert "## Takeaways\n\n- Write the goal down\n- Test the format first\n- Ship it\n" in md
+    assert md.index("## Takeaways") < md.index("## Executive summary") < md.index("## Reel")
+    plan["output"]["reel"].pop("closing")
+    assert "## Takeaways" not in to_markdown("Demo", "assets/demo-clip.mp4", 72, DEMO, plan=plan)
+
+
+def test_executive_summary_skips_asr_run_ons():
+    """A whisper transcript without punctuation joins into 1000-character 'sentences'."""
+    run_on = Cue(0, 60, " ".join(f"word{i} the plan because" for i in range(80)))
+    cues = [run_on, Cue(60, 64, "We should decide the schema tonight because the renderer needs it.", "K")]
+    picked = executive_summary(cues, n=3)
+    assert picked and all(len(s.text) <= 300 for s in picked)
+    assert any("schema" in s.text for s in picked)

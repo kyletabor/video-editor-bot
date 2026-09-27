@@ -110,3 +110,14 @@ def test_clean_text_keeps_dotted_tokens_and_collapses_filler_commas():
     assert clean_text("System agnostic: a .exe is not cool") == "System agnostic: a .exe is not cool"
     assert clean_text("So, um, real quick , we started") == "So, real quick, we started"
     assert clean_text("keep the .env file") == "keep the .env file"
+
+
+def test_clean_text_drops_the_comma_a_removed_filler_leaves_after_a_period():
+    """Regression (sentence snapping surfaced it): 'often. Uh, but you know, that's' became 'often., but, that's'."""
+    from clipbot.select import clean_text
+    from clipbot.summarize import sentences
+
+    assert clean_text("I should shower more often. Uh, but you know, that's enough honesty.") == \
+        "I should shower more often. but, that's enough honesty."
+    texts = [s.text for s in sentences([Cue(0, 4, "I should shower more often. Uh, but you know, that's enough honesty.")])]
+    assert texts == ["I should shower more often.", "but, that's enough honesty."]
