@@ -8,7 +8,9 @@
 
 Captions come from the source's subtitle stream, `--srt FILE`, or
 `--transcribe` (faster-whisper; needs `--extra whisper`). `--speakers gemini.txt`
-labels unlabelled cues from a Gemini transcript (speakers.py).
+labels unlabelled cues from a Gemini transcript (speakers.py). Word timings
+(`--words FILE`, or the `.words.json` that `--transcribe` writes) let `reel` cut
+fillers and long pauses without ever clipping a word (cuts.py).
 """
 
 from __future__ import annotations
@@ -23,14 +25,17 @@ import sys
 from pathlib import Path
 
 from . import captions as cap
+from . import cuts
 from . import llm
 from . import outline as outl
 from . import plan as planmod
 from . import probe as probemod
 from . import reel as reelmod
 from . import select as sel
+from . import silence
 from . import speakers as spk
 from . import summarize as summ
+from . import words as wordsmod
 
 
 def tool_environment() -> None:
@@ -56,6 +61,21 @@ def load_cues(a: argparse.Namespace, info: probemod.SourceInfo, out_dir: Path) -
     if info.subtitle_stream_index is not None:
         return cap.parse_srt(cap.extract_embedded_srt(a.source, info.subtitle_stream_index)), "embedded", None
     raise RuntimeError("no captions in the source; pass --srt FILE or --transcribe (needs --extra whisper)")
+
+
+def load_words(a: argparse.Namespace, srt_path: str | None) -> list[wordsmod.Word]:
+    """Word timings from --words, else the `.words.json` next to the SRT
+    (what --transcribe writes), else none: embedded Meet captions have no words."""
+    path = Path(a.words) if getattr(a, "words", None) else None
+    if path is None and srt_path:
+        sibling = wordsmod.words_path(srt_path)
+        if sibling.is_file():
+            path = sibling
+    if path is None:
+        return []
+    words = wordsmod.load_words(path)
+    print(f"words: {len(words)} timed words from {path}", file=sys.stderr)
+    return words
 
 
 def add_speakers(a: argparse.Namespace, cues: list[cap.Cue]) -> list[cap.Cue]:
@@ -140,6 +160,27 @@ def cmd_outline(a: argparse.Namespace) -> int:
     return 0
 
 
+def _hms(t: float) -> str:
+    """h:mm:ss.s — tenths matter once cuts land on word edges."""
+    t = max(0.0, t)
+    h, rem = divmod(int(t), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s + (t - int(t)):04.1f}"
+
+
+def _cut_summary(rep: cuts.CutReport) -> str:
+    if rep.intact:
+        return rep.note
+    if not rep.removed_seconds:
+        return "nothing to cut"
+    parts = []
+    if rep.fillers:
+        parts.append(f"{rep.fillers} filler{'s' if rep.fillers != 1 else ''}")
+    if rep.silence_seconds:
+        parts.append(f"{rep.silence_seconds:.1f} s silence")
+    return f"-{rep.removed_seconds:.1f} s ({', '.join(parts)}) -> {len(rep.segments)} segment{'s' if len(rep.segments) != 1 else ''}"
+
+
 def cmd_reel(a: argparse.Namespace) -> int:
     minutes = a.minutes if a.minutes is not None else 4.0  # target is advisory
     info = probemod.probe(a.source)
@@ -151,6 +192,8 @@ def cmd_reel(a: argparse.Namespace) -> int:
     if not cues:
         print("clipbot: the transcript is empty", file=sys.stderr)
         return 2
+    words = load_words(a, srt_path)
+    spans = reelmod.spans_for(cues, words)
 
     low, _, high = reelmod.target_band(minutes)
     moments: list[reelmod.Moment] = []
@@ -159,7 +202,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         specs = json.loads(Path(a.moments).read_text(encoding="utf-8"))
         if not isinstance(specs, list) or not specs:
             raise ValueError(f"{a.moments}: expected a non-empty JSON list of moments")
-        moments = reelmod.moments_from_specs(specs, cues)
+        moments = reelmod.moments_from_specs(specs, cues, spans=spans)
         how = f"--moments {a.moments}"
     elif a.llm:
         if not llm.has_credentials():
@@ -170,18 +213,47 @@ def cmd_reel(a: argparse.Namespace) -> int:
                     outl.transcript_text(cues), minutes=minutes, duration=info.duration_seconds,
                     log=lambda msg: print(msg, file=sys.stderr),
                 )
-                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues), minutes)
+                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues, spans=spans), minutes)
                 if len(moments) < reelmod.MIN_MOMENTS:
                     raise RuntimeError(f"the model proposed only {len(moments)} usable moments")
                 how = f"llm ({llm.MODEL})"
             except Exception as e:  # noqa: BLE001 - documented: any failure -> heuristic
                 print(f"llm: {e}; using the heuristic selector", file=sys.stderr)
                 moments = []
+    hand_picked = bool(moments)
     if not moments:
-        moments = reelmod.pick_moments(cues, minutes, preset=a.preset)
+        moments = reelmod.pick_moments(cues, minutes, preset=a.preset, spans=spans)
     if not moments:
         print("clipbot: could not find any usable moments", file=sys.stderr)
         return 3
+    moments, notes = reelmod.resolve_overlaps(moments, info.duration_seconds)
+    for note in notes:
+        print(f"snap: {note}", file=sys.stderr)
+    if not moments:
+        print("clipbot: no moment lies inside the source", file=sys.stderr)
+        return 3
+
+    # Filler + silence removal (cuts.py). Silences come from the audio; fillers need word timings.
+    reports: list[cuts.CutReport] = []
+    if not a.keep_fillers:
+        spans_padded = [cuts.pad(m.start, m.end, a.lead_seconds, a.tail_seconds, info.duration_seconds) for m in moments]
+        try:
+            silences = silence.detect_silences(info.path, spans_padded, min_seconds=a.max_silence)
+        except RuntimeError as e:
+            print(f"cuts: silence detection skipped ({e})", file=sys.stderr)
+            silences = [[] for _ in moments]
+        if not words:
+            print("cuts: no word timestamps (--words FILE, or --transcribe writes them); fillers kept, "
+                  "only pauses longer than the limit are shortened", file=sys.stderr)
+        moments, reports = reelmod.cut_moments(
+            moments, words, silences, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds,
+            fillers=bool(words), max_silence=a.max_silence,
+        )
+
+    given = None
+    if a.takeaways:
+        given = Path(a.takeaways).read_text(encoding="utf-8").splitlines()
+    takeaways = reelmod.takeaway_lines(moments, cues, given=given, hand_picked=hand_picked)
 
     title = a.title or Path(a.source).stem
     date = a.date or datetime.date.fromtimestamp(Path(a.source).stat().st_mtime).isoformat()
@@ -189,6 +261,8 @@ def cmd_reel(a: argparse.Namespace) -> int:
     plan = reelmod.build_reel_plan(
         info, moments, out_dir=str(out_dir), title=title, date=date, preset=a.preset,
         captions_kind=captions_kind, srt_path=srt_path, summary_path=str(summary_path),
+        lead=a.lead_seconds, tail=a.tail_seconds, takeaways=takeaways, transition=a.transition,
+        music=planmod.contract_path(a.music) if a.music else None,
     )
     planmod.validate(plan)
     out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
@@ -198,14 +272,27 @@ def cmd_reel(a: argparse.Namespace) -> int:
         summ.to_markdown(title, info.path, info.duration_seconds, cues, plan=plan), encoding="utf-8"
     )
     for n, m in enumerate(moments, 1):
-        print(f"{n}\t[{outl.clock(m.start)}-{outl.clock(m.end)}]\t{m.title}\t{m.why}")
-    total = reelmod.runtime(moments)
+        print(f"{n}\t[{outl.clock(m.start)}-{outl.clock(m.end)}]\t{m.lesson or m.title}\t{m.why}")
+        detail = []
+        if m.requested and (abs(m.requested[0] - m.start) > 0.05 or abs(m.requested[1] - m.end) > 0.05):
+            detail.append(f"asked {_hms(m.requested[0])}-{_hms(m.requested[1])} -> snapped {_hms(m.start)}-{_hms(m.end)}")
+        if reports:
+            detail.append(f"cuts: {_cut_summary(reports[n - 1])}")
+        if detail:
+            print("\t\t" + " · ".join(detail))
+    total = reelmod.plan_runtime(plan)
+    removed = sum(r.removed_seconds for r in reports)
+    cut_line = ""
+    if reports:
+        fillers = sum(r.fillers for r in reports)
+        sil = sum(r.silence_seconds for r in reports)
+        cut_line = f"; cuts removed {removed:.1f} s ({fillers} fillers, {sil:.1f} s silence)"
     if a.minutes is None and how.startswith("--moments"):
-        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards "
+        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards{cut_line} "
               "(length follows your moments; pass --minutes for a ±20% target check)")
     else:
         band = "within" if low <= total <= high else "OUTSIDE"
-        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards "
+        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards{cut_line} "
               f"({band} {minutes:g} min ±20%, best effort)")
     print(f"plan written: {out_path}")
     print(f"moments written: {moments_path}")
@@ -248,6 +335,8 @@ def render(plan_path: Path) -> int:
 
 def add_caption_args(p: argparse.ArgumentParser, speakers: bool = True) -> None:
     p.add_argument("--srt", default=None, help="sidecar SRT when the source has no captions")
+    p.add_argument("--words", default=None,
+                   help="word timings JSON [{start,end,word}] for --srt (--transcribe writes <name>.words.json itself)")
     p.add_argument("--transcribe", action="store_true",
                    help="no captions? transcribe with faster-whisper (uv ... --extra whisper); SRT is kept next to --out")
     p.add_argument("--whisper-model", default="base", help="faster-whisper model size (default: base)")
@@ -290,17 +379,32 @@ def main(argv: list[str] | None = None) -> int:
     po.add_argument("--out", default="out/outline.md")
     po.set_defaults(fn=cmd_outline)
 
-    pr = sub.add_parser("reel", help="N-minute summary reel plan: intro + chapter cards + moments")
+    pr = sub.add_parser("reel", help="N-minute summary reel plan: intro + chapter cards + moments + takeaways")
     pr.add_argument("--source", required=True)
     pr.add_argument("--minutes", type=float, default=None,
                     help="target reel length incl. cards (±20 %%, best effort; default 4). With --moments the reel is as long as your moments")
     pr.add_argument("--out", default="out/reel/plan.json")
     pr.add_argument("--preset", default="internal", choices=sorted(planmod.PRESET_BOUNDS))
     add_caption_args(pr)
-    pr.add_argument("--moments", default=None, help="JSON list of {start,end,title,lines,why}; see clipbot outline")
+    pr.add_argument("--moments", default=None,
+                    help="JSON list of {start,end,title,lesson,context,lines,why}; see clipbot outline")
     pr.add_argument("--llm", action="store_true", help="pick moments with Claude when ANTHROPIC_API_KEY is set")
     pr.add_argument("--title", default=None, help="intro slide title (default: source file stem)")
     pr.add_argument("--date", default=None, help="'Recorded' date on the intro (default: source file date)")
+    pr.add_argument("--takeaways", default=None,
+                    help="text file, one takeaway per line, for the closing cards (default: the moments' lessons)")
+    pr.add_argument("--keep-fillers", action="store_true",
+                    help="do not cut filler words or long pauses inside moments")
+    pr.add_argument("--max-silence", type=float, default=cuts.MAX_SILENCE,
+                    help=f"pauses longer than this many seconds are shortened (default {cuts.MAX_SILENCE})")
+    pr.add_argument("--lead-seconds", type=float, default=cuts.LEAD_SECONDS,
+                    help=f"air before the first word of a moment (default {cuts.LEAD_SECONDS})")
+    pr.add_argument("--tail-seconds", type=float, default=cuts.TAIL_SECONDS,
+                    help=f"air after the last word of a moment (default {cuts.TAIL_SECONDS})")
+    pr.add_argument("--transition", default="dip", choices=["cut", "dip", "dissolve"],
+                    help="join between cards and clips (default dip, 0.4 s)")
+    pr.add_argument("--music", default=None,
+                    help="music bed under the cards (audio file you have the rights to; see contract/README.md)")
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)
 
