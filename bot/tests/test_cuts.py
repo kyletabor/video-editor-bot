@@ -99,26 +99,37 @@ def test_tighten_removes_a_filler_with_breath_and_never_cuts_inside_a_word():
     assert rep.removed_seconds == pytest.approx(0.6) and not rep.intact
 
 
-def test_tighten_shortens_long_pauses_to_max_silence_and_clips_them_to_words():
+def test_tighten_shortens_silent_word_gaps_to_keep_pause_and_clips_the_silence_to_the_words():
     ws = words([(0.0, 1.0, "Alpha"), (1.0, 2.0, "beta."), (5.0, 6.0, "Gamma"), (6.0, 7.0, "delta."), (7.5, 8.5, "Eps"), (8.5, 9.5, "end.")])
-    # ffmpeg's silence 1.8-5.2 overlaps "beta." and "Gamma": the cut is clipped to their edges 2.0-5.0;
-    # the 0.5 s pause at 7.0 is under max_silence and stays.
+    # ffmpeg's silence 1.8-5.2 overlaps "beta." and "Gamma": the pause is their gap 2.0-5.0, cut down the
+    # middle to KEEP_PAUSE (0.175 s of air each side). The 0.5 s pause at 7.0 is under max_silence and stays.
     rep = tighten(0.0, 9.5, ws, [(1.8, 5.2), (7.0, 7.5)])
-    assert segs(rep) == [(0.0, 2.35), (4.65, 9.5)]  # 0.35 s air each side: the pause is now exactly 0.7 s
-    assert rep.fillers == 0 and rep.silence_seconds == pytest.approx(2.3)
+    assert segs(rep) == [(0.0, 2.175), (4.825, 9.5)]
+    assert rep.fillers == 0 and rep.silence_seconds == pytest.approx(2.65)
 
 
-def test_tighten_ignores_pauses_not_worth_a_join():
+def test_tighten_shortens_even_a_one_second_gap_but_the_silence_path_still_needs_a_saving():
+    """Before: a 1.0 s pause survived because cutting it to 0.7 s saved only 0.3 s. With word timings
+    every silent gap over max_silence is shortened (17 such pauses survived in the second reel). The
+    audio-only path (no timed words) keeps the old rule: a silence edge is not exact enough
+    to justify a join for 0.3 s."""
     ws = words([(0.0, 3.0, "Alpha."), (4.0, 7.0, "Beta.")])
-    assert tighten(0.0, 7.0, ws, [(3.0, 4.0)]).segments == ((0.0, 7.0),)  # 1.0 s pause -> would save 0.3 s only
+    assert segs(tighten(0.0, 7.0, ws, [(3.0, 4.0)])) == [(0.0, 3.175), (3.825, 7.0)]
+    assert tighten(0.0, 7.0, [], [(3.0, 4.0)]).segments == ((0.0, 7.0),)
 
 
-def test_tighten_merges_short_fragments_and_respects_the_removal_cap():
-    ws = words([(0.0, 3.0, "Intro words here"), (5.0, 5.5, "Right."), (9.0, 12.0, "closing words.")])
-    rep = tighten(0.0, 12.0, ws, [(3.0, 5.0), (5.5, 9.0)])
-    # "Right." would be a 1.2 s island between two cuts: the shorter cut is cancelled instead
-    assert segs(rep) == [(0.0, 5.85), (8.65, 12.0)]
-    rep = tighten(0.0, 20.0, words([(0, 2, "a."), (18, 20, "b.")]), [(2.0, 18.0)])
+def test_tighten_fragment_rule_applies_to_filler_cuts_not_to_pause_cuts():
+    # "Right." would be a 1.1 s island between two filler cuts: the shorter cut is cancelled instead
+    ws = words([(0.0, 3.0, "Intro"), (3.2, 3.5, "um"), (3.7, 4.5, "Right."), (5.0, 5.3, "uh"), (5.5, 12.0, "closing words.")])
+    rep = tighten(0.0, 12.0, ws, None)
+    assert segs(rep) == [(0.0, 4.65), (5.35, 12.0)] and rep.fillers == 1
+    # between two PAUSE cuts the same island stays: a pause cut removes no speech, so it needs no fragment rule
+    ws = words([(0.0, 3.0, "Intro"), (5.0, 5.5, "Right."), (8.0, 12.0, "closing words.")])
+    assert segs(tighten(0.0, 12.0, ws, None)) == [(0.0, 3.175), (4.825, 5.675), (7.825, 12.0)]
+
+
+def test_tighten_respects_the_removal_cap():
+    rep = tighten(0.0, 20.0, words([(0, 2, "a."), (18, 20, "b.")]), None)
     assert rep.intact and rep.segments == ((0.0, 20.0),) and "kept intact" in rep.note
     assert rep.removed_seconds == 0
 

@@ -17,13 +17,18 @@ Two ways in, one way out:
 - `moments_from_specs(specs, cues)` takes {start, end, title, lesson, ...}
   records from a human (`clipbot outline` skeleton) or a model (llm.py).
 
-Both snap every edge OUTWARD to a sentence boundary (cuts.snap_outward): the
-first reel cut people off mid-sentence because edges landed on Meet's 4 s cue
-grid. A Moment's start/end are those speech edges; `cut_moments` turns each
-into a keep-list with fillers and long pauses removed, and `build_reel_plan`
-adds the lead/tail air and writes the plan. moments.json (`Moment.spec`) keeps
-the speech edges, so feeding it back re-snaps to the same sentences instead of
-growing by one sentence per round trip.
+Both snap every edge to a sentence boundary (`snapper_for`): with word timings
+`cuts.WordSnapper` puts each edge on a word edge, preferably a sentence edge,
+and never inside a word; with caption cues only, `cuts.snap_outward` moves
+edges outward to the cue-estimated sentence. The first reel cut people off
+mid-sentence because edges landed on Meet's 4 s cue grid; the second cut into
+words because cue ends of a VAD-segmented whisper file are not word ends. A
+Moment's start/end are those speech edges; `cut_moments` turns each into a
+keep-list with fillers and long pauses removed and adds the lead/tail air
+(stopping short of the neighbouring words), and `build_reel_plan` writes the
+plan. moments.json (`Moment.spec`) keeps the speech edges, so feeding it back
+re-snaps to the same sentences instead of growing by one sentence per round
+trip.
 """
 
 from __future__ import annotations
@@ -33,15 +38,16 @@ from dataclasses import dataclass, replace
 
 from .captions import Cue
 from .cuts import (
+    KEEP_PAUSE,
     LEAD_SECONDS,
     MAX_SILENCE,
     TAIL_SECONDS,
     CutReport,
     Snapper,
     Span,
+    WordSnapper,
     pad,
     sentence_spans,
-    snap_outward,
     tighten,
 )
 from .lessons import (  # noqa: F401 - CARD_SECONDS / clip_text / limits are re-exported for callers and tests
@@ -209,24 +215,42 @@ def spans_for(cues: list[Cue], words: list[Word] | None = None) -> list[Span]:
     return sentence_spans(words if words else words_from_cues(cues))
 
 
+def snapper_for(cues: list[Cue], words: list[Word] | None = None) -> WordSnapper | Snapper:
+    """How edges snap for this transcript: on word edges when whisper timed the
+    words (cuts.WordSnapper), else on cue-estimated sentences (cuts.Snapper)."""
+    if words and any(w.timed for w in words):
+        return WordSnapper(words)
+    return Snapper(spans_for(cues))
+
+
+def _snapper(cues: list[Cue], spans: list[Span] | None, snapper: WordSnapper | Snapper | None) -> WordSnapper | Snapper:
+    """`snapper` wins; else a cue-based one from `spans` (or from the cues)."""
+    if snapper is not None:
+        return snapper
+    return Snapper(spans if spans is not None else spans_for(cues))
+
+
 def candidate_windows(
-    cues: list[Cue], lo: float, hi: float, target_len: float, spans: list[Span] | None = None
+    cues: list[Cue], lo: float, hi: float, target_len: float, spans: list[Span] | None = None,
+    *, snapper: WordSnapper | Snapper | None = None,
 ) -> list[Window]:
     """The best window starting at each cue.
 
     A window is a run of consecutive cues with lo <= duration <= hi and no
-    silence longer than MAX_GAP. Its edges are snapped outward to sentence
-    boundaries first (`spans`), so the bounds and the score apply to the clip a
-    viewer would actually see. Score = sum(content) / max(duration, target_len):
-    adding a cue helps until the window reaches the target length, after that
-    only if it raises the per-second average, so windows stop where the good
-    part ends instead of always running to `hi`. Edges on a sentence boundary
-    earn a bonus so clips open and close on a sentence (contract obligation 5).
+    silence longer than MAX_GAP. Its edges are snapped to sentence boundaries
+    first (`snapper`, or a cue-based one from `spans`), so the bounds and the
+    score apply to the clip a viewer would actually see. Score =
+    sum(content) / max(duration, target_len): adding a cue helps until the
+    window reaches the target length, after that only if it raises the
+    per-second average, so windows stop where the good part ends instead of
+    always running to `hi`. Edges on a sentence boundary earn a bonus so clips
+    open and close on a sentence (contract obligation 5).
     """
     base = [content_score(c) + 0.5 for c in cues]  # +0.5: speech has value even when plain
     n = len(cues)
-    if spans:
+    if snapper is None and spans:
         snapper = Snapper(spans)
+    if snapper is not None:
         starts = [snapper.start(c.start) for c in cues]
         ends = [snapper.end(c.end) for c in cues]
     else:
@@ -303,19 +327,20 @@ def _runtime_w(ws: list[Window]) -> float:
 
 
 def pick_moments(
-    cues: list[Cue], minutes: float, preset: str = "internal", *, spans: list[Span] | None = None
+    cues: list[Cue], minutes: float, preset: str = "internal", *, spans: list[Span] | None = None,
+    snapper: WordSnapper | Snapper | None = None,
 ) -> list[Moment]:
     """Heuristic v2 (module docstring). Chronological result, +-20 % of `minutes` when possible."""
     if not cues:
         return []
-    spans = spans if spans is not None else spans_for(cues)
+    snapper = _snapper(cues, spans, snapper)
     low, target, high = target_band(minutes)
     k = max(MIN_MOMENTS, round(target / SECONDS_PER_MOMENT))
     budget = max(target - INTRO_SECONDS - BOOKENDS_SECONDS - (CARD_SECONDS + PAD_SECONDS) * k, 0.0)
     hi = min(MAX_WINDOW, float(PRESET_BOUNDS.get(preset, (15, 120))[1]))
     lo = min(MIN_WINDOW, max(8.0, budget / k))  # tiny targets (demo: 0.5 min) cannot fit K x 15 s
     target_len = min(hi, max(lo, budget / k))
-    cands = candidate_windows(cues, lo, hi, target_len, spans)
+    cands = candidate_windows(cues, lo, hi, target_len, snapper=snapper)
     if not cands:
         return []
     t0 = min(c.start for c in cues)
@@ -450,16 +475,21 @@ def moment_from_cues(
     )
 
 
-def moments_from_specs(specs: list[dict], cues: list[Cue], *, spans: list[Span] | None = None) -> list[Moment]:
+def moments_from_specs(
+    specs: list[dict], cues: list[Cue], *, spans: list[Span] | None = None,
+    snapper: WordSnapper | Snapper | None = None,
+) -> list[Moment]:
     """Snap human/LLM records to sentence boundaries; keep the given order.
 
-    start moves back to the start of the sentence it falls in, end forward to
-    the end of the sentence it falls in (cuts.snap_outward), so the clip never
-    opens or closes mid-sentence. A time in a gap between sentences stays put.
-    `lesson`/`context` (<= 80 / <= 120) frame the moment for a viewer who was
-    not there; `title`/`lines`/`why` keep working as before.
+    start moves to the start of the sentence it falls in, end to the end of
+    the sentence it falls in (`snapper`: cuts.WordSnapper with word timings,
+    else cuts.Snapper over cue-estimated sentences), so the clip never opens or
+    closes mid-sentence or mid-word. With cues only, a time in a gap between
+    sentences stays put; with words it lands on the nearest word edge across
+    the silence. `lesson`/`context` (<= 80 / <= 120) frame the moment for a
+    viewer who was not there; `title`/`lines`/`why` keep working as before.
     """
-    spans = spans if spans is not None else spans_for(cues)
+    snapper = _snapper(cues, spans, snapper)
     out: list[Moment] = []
     for k, spec in enumerate(specs, 1):
         try:
@@ -468,7 +498,9 @@ def moments_from_specs(specs: list[dict], cues: list[Cue], *, spans: list[Span] 
             raise ValueError(f"moment {k}: needs start and end (seconds or h:mm:ss): {e}") from e
         if asked_end <= asked_start:
             raise ValueError(f"moment {k}: end must be after start")
-        start, end = snap_outward(asked_start, asked_end, spans)
+        start, end = snapper.snap(asked_start, asked_end)
+        if end <= start:  # words only: a request that touches no word collapses; keep what was asked
+            start, end = asked_start, asked_end
         idx = tuple(i for i, c in enumerate(cues) if c.end > start and c.start < end)
         lines = spec.get("lines") or ()
         if isinstance(lines, str):
@@ -553,23 +585,40 @@ def segments_for(
 def cut_moments(
     moments: list[Moment],
     words: list[Word],
-    silences: list[list[tuple[float, float]]],
+    silences: list[list[tuple[float, float]] | None] | None,
     *,
     lead: float = LEAD_SECONDS,
     tail: float = TAIL_SECONDS,
     duration: float | None = None,
     fillers: bool = True,
+    pauses: bool = True,
     max_silence: float = MAX_SILENCE,
+    keep_pause: float = KEEP_PAUSE,
 ) -> tuple[list[Moment], list[CutReport]]:
-    """Filler + silence removal for every moment (cuts.tighten); `silences[i]`
-    belongs to `moments[i]`. Returns the moments with `segments` filled in and
-    one report each."""
+    """Lead/tail air, then filler + pause removal for every moment (cuts.tighten);
+    `silences[i]` is what silence.py found in `moments[i]`, `None` (for one
+    moment or for all) when the audio was not checked.
+
+    With timed words a moment's speech edges become its first and last word
+    edges (a moment that `resolve_overlaps` started in the pause after its
+    neighbour now starts on its first word), and the air stops short of the
+    neighbouring words (cuts.WordSnapper.pad), so no tail ever runs into the
+    next word. Returns the moments with `start`/`end`/`segments` updated and one
+    report each. `fillers=False, pauses=False` only pads."""
+    snapper = WordSnapper(words) if any(w.timed for w in words) else None
     out: list[Moment] = []
     reports: list[CutReport] = []
+    if silences is None:
+        silences = [None] * len(moments)
     for m, sil in zip(moments, silences):
-        s, e = pad(m.start, m.end, lead, tail, duration)
-        rep = tighten(s, e, words, sil, fillers=fillers, max_silence=max_silence)
-        out.append(replace(m, segments=rep.segments))
+        start, end = m.start, m.end
+        if snapper is not None:
+            start, end = snapper.speech_edges(start, end)
+            s, e = snapper.pad(start, end, lead, tail, duration)
+        else:
+            s, e = pad(start, end, lead, tail, duration)
+        rep = tighten(s, e, words, sil, fillers=fillers, pauses=pauses, max_silence=max_silence, keep_pause=keep_pause)
+        out.append(replace(m, start=start, end=end, segments=rep.segments))
         reports.append(rep)
     return out, reports
 
@@ -598,7 +647,10 @@ def takeaway_lines(
 
 
 def plan_runtime(plan: dict) -> float:
-    """Seconds on screen: intro + opening + (card + kept) per clip + closing + outro."""
+    """Seconds on screen: intro + opening + (card + kept) per clip + closing + outro.
+    Every card and every kept second counts; the intro line and the `reel:` line
+    both show this number, rounded to the second (`_ts` alone floors, which read
+    "4:56" against a 5:02 file once)."""
     reel = plan.get("output", {}).get("reel") or {}
     total = 0.0
     for card in (reel.get("intro"), reel.get("outro"), *reel.get("opening", []), *reel.get("closing", [])):
@@ -661,5 +713,5 @@ def build_reel_plan(
         reel["music"] = {"path": music}
     plan["output"]["reel"] = reel
     total = plan_runtime(plan)
-    reel["intro"]["lines"] = [f"Recorded {date}", f"{len(moments)} moments · {_ts(total)}"]
+    reel["intro"]["lines"] = [f"Recorded {date}", f"{len(moments)} moments · {_ts(round(total))}"]
     return plan

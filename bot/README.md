@@ -68,33 +68,49 @@ Kyle's review of the first reel: segments cut people off mid-sentence, "ums"
 stayed in, long silences stayed in, and there was no summary at the end. Every
 moment, whichever way it was chosen, now goes through the same steps:
 
-1. **Snap outward to sentence boundaries.** The start moves back to the start of
-   the sentence it falls in, the end forward to the end of the sentence it falls
-   in; never inward. Sentences come from word timings when there are any
-   (`--words`, or what `--transcribe` writes), else from the caption cues joined
-   at punctuation, speaker changes and pauses > 1.5 s; with cues the cut lands on
-   the cue edge the sentence begins or ends in. An edge moves at most 12 s (a
-   longer "sentence" is an ASR artifact: whisper emits 20–40 s cues over
-   near-silence). Two moments that end up sharing a sentence are separated at
-   that boundary and the run says so.
+1. **Snap to sentence boundaries, on word edges.** With word timings (`--words`,
+   or what `--transcribe` writes) every edge lands on a word edge, never inside a
+   word: the end goes forward to the first word that ends with `. ? !` or is
+   followed by a pause of 0.45 s (at most 8 s; past that, the last word end
+   followed by a 0.25 s breath), the start goes back to the start of its
+   sentence (at most 6 s). An edge inside a word moves outward to include it; an
+   edge in the pause after a sentence moves back across the silence to the word
+   end, so a request copied from a caption cue that ends in dead air does not
+   drag the next speaker's "So" into the clip. Speech is never lost. Without word
+   timings the old rule holds: outward to the sentence estimated from the caption
+   cues joined at punctuation, speaker changes and pauses > 1.5 s, cutting on the
+   cue edge, at most 12 s. Two moments that end up sharing a sentence are
+   separated at that boundary and the run says so.
 2. **Air.** `--lead-seconds` (0.15) before the first word, `--tail-seconds`
    (0.3) after the last: ASR word edges run early, and the renderer's audio fade
-   needs room that is not speech.
+   needs room that is not speech. The air stops 0.05 s short of the neighbouring
+   word; the second reel's "…before it merges. [1.6 s] So it|" was a tail that ran
+   into the next word.
 3. **Fillers and pauses** (on by default; `--keep-fillers` turns it off).
    "um", "uh", "ah", "er", "hmm", and "like" / "you know" when set off by commas
-   or pauses, are cut; pauses longer than `--max-silence` (0.7 s, found by
-   `ffmpeg -af silencedetect=noise=-35dB` on the audio itself, one seek per
-   moment, in parallel) are shortened to 0.7 s. Guardrails: a cut never lands
-   inside a word (filler removal needs word timings, so with Meet captions only
-   pauses are shortened and the run says so); at least 0.15 s of breath stays
-   around every kept span; no kept fragment is shorter than 1.5 s (the
-   neighbouring cut is cancelled instead); at most 20 segments per clip; and if
-   the cuts would remove more than 40 % of a moment it is kept whole with a
-   warning — that much "silence" is either dead air worth re-picking or a quiet
-   speaker the threshold mistakes for a pause.
+   or pauses, are cut with 0.15 s of breath on each side. A pause is a gap
+   between two words that the audio agrees is silent (`ffmpeg -af
+   silencedetect=noise=-35dB` on the source, one seek per moment, in parallel);
+   every silent stretch longer than `--max-silence` (0.7 s) is shortened to
+   `--keep-pause` (0.35 s) by cutting its middle. Both sources are needed:
+   whisper's word edges are approximate and it emits zero-length words, and on
+   talk2 a "gap" between words held 1.7 s of untranscribed speech at full
+   volume, so a gap alone can be speech; and a silence alone cannot tell a quiet
+   word end from a pause, so it is clipped to the word edges. What is neither a
+   word nor silence (a laugh, cross-talk, a cough) stays. Guardrails: a cut never
+   lands inside a word, so a pause whisper stretched a word over (talk2's "very"
+   spans 1.9 s with 0.84 s of silence inside) stays too; no kept fragment is
+   shorter than 1.5 s because of a filler cut (the cut is cancelled instead;
+   pause cuts remove no speech and are exempt); at most 20 segments per clip; and
+   if the cuts would remove more than 40 % of a moment it is kept whole with a
+   warning — that much "silence" is dead air worth re-picking or a stretch
+   whisper did not transcribe. With Meet captions only (no word timings) fillers
+   stay, pauses come from the audio alone and are shortened to 0.7 s.
 
 The run prints, per moment, the requested span, the snapped span and what was
-cut; the moment's `segments` in the plan are the keep-list.
+cut; the moment's `segments` in the plan are the keep-list. The runtime on the
+intro card and in the `reel:` line is intro + opening + every card + kept speech
++ closing + outro, rounded to the second.
 
 ## Lessons and the summary at the end (`clipbot/lessons.py`)
 

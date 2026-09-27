@@ -225,14 +225,14 @@ def test_takeaway_lines_prefer_given_then_lessons_then_titles_then_summary():
 def test_cut_moments_fills_segments_and_the_plan_uses_them():
     ws = [Word(10.0, 12.0, "Alpha"), Word(12.0, 13.0, "beta."), Word(16.0, 17.0, "Gamma"), Word(17.0, 20.0, "delta.")]
     m = Moment(10.0, 20.0, "t.", "t")
-    [cut], [rep] = cut_moments([m], ws, [[(13.0, 16.0)]], duration=72.0)
-    assert rep.silence_seconds == pytest.approx(2.3) and cut.kept == pytest.approx(10.45 - 2.3)
+    [cut], [rep] = cut_moments([m], ws, None, duration=72.0)  # the 3 s gap "beta." -> "Gamma" becomes KEEP_PAUSE
+    assert rep.silence_seconds == pytest.approx(2.65) and cut.kept == pytest.approx(10.45 - 2.65)
     assert runtime([cut]) < runtime([m]) and cut.duration == m.duration
     info = SourceInfo("assets/demo-clip.mp4", 72.0, True, True, 0)
     plan = build_reel_plan(info, [cut], "out/x", title="t", date="d")
-    assert plan["clips"][0]["segments"] == [{"start": 9.85, "end": 13.35}, {"start": 15.65, "end": 20.3}]
+    assert plan["clips"][0]["segments"] == [{"start": 9.85, "end": 13.175}, {"start": 15.825, "end": 20.3}]
     validate(plan)
-    [same], [rep2] = cut_moments([m], ws, [[]], fillers=False)
+    [same], [rep2] = cut_moments([m], ws, [[]], fillers=False, pauses=False)  # --keep-fillers: padded only
     assert same.segments == ((9.85, 20.3),) and rep2.removed_seconds == 0
 
 
@@ -286,7 +286,7 @@ def test_build_reel_plan_validates_against_v12():
     reel = plan["output"]["reel"]
     assert reel["filename"] == "reel.mp4" and reel["chapter_cards"] == "all"
     assert reel["intro"]["title"] == "Demo clip" and reel["intro"]["seconds"] == INTRO_SECONDS
-    assert reel["intro"]["lines"] == ["Recorded 2026-09-25", f"{len(moments)} moments · {_ts(plan_runtime(plan))}"]
+    assert reel["intro"]["lines"] == ["Recorded 2026-09-25", f"{len(moments)} moments · {_ts(round(plan_runtime(plan)))}"]
     assert reel["opening"][0]["title"] == "What you'll learn" and 1 <= len(reel["opening"][0]["lines"]) <= 4
     assert reel["closing"] == [{"title": "Takeaways", "lines": ["Test the format first", "Write the goal down"], "seconds": 4.5}]
     assert reel["outro"]["title"] == "That's the session"

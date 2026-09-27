@@ -193,7 +193,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         print("clipbot: the transcript is empty", file=sys.stderr)
         return 2
     words = load_words(a, srt_path)
-    spans = reelmod.spans_for(cues, words)
+    snapper = reelmod.snapper_for(cues, words)  # word edges with --words / --transcribe, cue sentences without
 
     low, _, high = reelmod.target_band(minutes)
     moments: list[reelmod.Moment] = []
@@ -202,7 +202,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         specs = json.loads(Path(a.moments).read_text(encoding="utf-8"))
         if not isinstance(specs, list) or not specs:
             raise ValueError(f"{a.moments}: expected a non-empty JSON list of moments")
-        moments = reelmod.moments_from_specs(specs, cues, spans=spans)
+        moments = reelmod.moments_from_specs(specs, cues, snapper=snapper)
         how = f"--moments {a.moments}"
     elif a.llm:
         if not llm.has_credentials():
@@ -213,7 +213,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
                     outl.transcript_text(cues), minutes=minutes, duration=info.duration_seconds,
                     log=lambda msg: print(msg, file=sys.stderr),
                 )
-                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues, spans=spans), minutes)
+                moments = reelmod.fit_moments(reelmod.moments_from_specs(specs, cues, snapper=snapper), minutes)
                 if len(moments) < reelmod.MIN_MOMENTS:
                     raise RuntimeError(f"the model proposed only {len(moments)} usable moments")
                 how = f"llm ({llm.MODEL})"
@@ -222,7 +222,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
                 moments = []
     hand_picked = bool(moments)
     if not moments:
-        moments = reelmod.pick_moments(cues, minutes, preset=a.preset, spans=spans)
+        moments = reelmod.pick_moments(cues, minutes, preset=a.preset, snapper=snapper)
     if not moments:
         print("clipbot: could not find any usable moments", file=sys.stderr)
         return 3
@@ -233,22 +233,26 @@ def cmd_reel(a: argparse.Namespace) -> int:
         print("clipbot: no moment lies inside the source", file=sys.stderr)
         return 3
 
-    # Filler + silence removal (cuts.py). Silences come from the audio; fillers need word timings.
-    reports: list[cuts.CutReport] = []
+    # Lead/tail air, then filler + pause removal (cuts.py). A pause is a gap between words that
+    # the audio confirms is silent (silence.py); without word timings the audio is all there is.
+    silences: list[list[tuple[float, float]]] | None = None  # None: audio not checked
     if not a.keep_fillers:
         spans_padded = [cuts.pad(m.start, m.end, a.lead_seconds, a.tail_seconds, info.duration_seconds) for m in moments]
         try:
             silences = silence.detect_silences(info.path, spans_padded, min_seconds=a.max_silence)
         except RuntimeError as e:
-            print(f"cuts: silence detection skipped ({e})", file=sys.stderr)
-            silences = [[] for _ in moments]
+            print(f"cuts: silence detection skipped ({e}); "
+                  + ("pauses follow the word timing alone" if words else "pauses are kept"), file=sys.stderr)
         if not words:
             print("cuts: no word timestamps (--words FILE, or --transcribe writes them); fillers kept, "
                   "only pauses longer than the limit are shortened", file=sys.stderr)
-        moments, reports = reelmod.cut_moments(
-            moments, words, silences, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds,
-            fillers=bool(words), max_silence=a.max_silence,
-        )
+    moments, reports = reelmod.cut_moments(
+        moments, words, silences, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds,
+        fillers=bool(words) and not a.keep_fillers, pauses=not a.keep_fillers,
+        max_silence=a.max_silence, keep_pause=a.keep_pause,
+    )
+    if a.keep_fillers:
+        reports = []  # padded only: nothing to report per moment
 
     given = None
     if a.takeaways:
@@ -280,7 +284,8 @@ def cmd_reel(a: argparse.Namespace) -> int:
             detail.append(f"cuts: {_cut_summary(reports[n - 1])}")
         if detail:
             print("\t\t" + " · ".join(detail))
-    total = reelmod.plan_runtime(plan)
+    total = reelmod.plan_runtime(plan)  # intro + opening + cards + kept + closing + outro, as on the intro card
+    shown = summ._ts(round(total))
     removed = sum(r.removed_seconds for r in reports)
     cut_line = ""
     if reports:
@@ -288,11 +293,11 @@ def cmd_reel(a: argparse.Namespace) -> int:
         sil = sum(r.silence_seconds for r in reports)
         cut_line = f"; cuts removed {removed:.1f} s ({fillers} fillers, {sil:.1f} s silence)"
     if a.minutes is None and how.startswith("--moments"):
-        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards{cut_line} "
+        print(f"reel: {len(moments)} moments via {how}; runtime {shown} incl. all cards{cut_line} "
               "(length follows your moments; pass --minutes for a ±20% target check)")
     else:
         band = "within" if low <= total <= high else "OUTSIDE"
-        print(f"reel: {len(moments)} moments via {how}; runtime {summ._ts(total)} incl. cards{cut_line} "
+        print(f"reel: {len(moments)} moments via {how}; runtime {shown} incl. all cards{cut_line} "
               f"({band} {minutes:g} min ±20%, best effort)")
     print(f"plan written: {out_path}")
     print(f"moments written: {moments_path}")
@@ -397,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="do not cut filler words or long pauses inside moments")
     pr.add_argument("--max-silence", type=float, default=cuts.MAX_SILENCE,
                     help=f"pauses longer than this many seconds are shortened (default {cuts.MAX_SILENCE})")
+    pr.add_argument("--keep-pause", type=float, default=cuts.KEEP_PAUSE,
+                    help=f"what a shortened pause becomes, in seconds (default {cuts.KEEP_PAUSE}; needs word timings)")
     pr.add_argument("--lead-seconds", type=float, default=cuts.LEAD_SECONDS,
                     help=f"air before the first word of a moment (default {cuts.LEAD_SECONDS})")
     pr.add_argument("--tail-seconds", type=float, default=cuts.TAIL_SECONDS,

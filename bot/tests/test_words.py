@@ -29,10 +29,14 @@ def test_words_round_trip_and_tolerant_load(tmp_path):
     assert [(w.start, w.end, w.text, w.timed) for w in load_words(p)] == [(0.0, 0.5, "Okay,", True), (0.6, 0.9, "so", True)]
     p.write_text(
         '[{"start": 1, "end": 2, "word": "b"}, {"start": 0, "end": 0.5, "word": " a "}, {"start": "x", "end": 1, "word": "bad"},'
-        ' {"start": 3, "end": 3, "word": "zero"}, {"start": 4, "end": 5, "word": "  "}, 7, {"start": 6, "end": 7, "text": "c"}]',
+        ' {"start": 3, "end": 3, "word": "zero"}, {"start": 4, "end": 5, "word": "  "}, 7, {"start": 6, "end": 7, "text": "c"},'
+        ' {"start": 9, "end": 8, "word": "backwards"}]',
         encoding="utf-8",
     )
-    assert [w.text for w in load_words(p)] == ["a", "b", "c"]  # sorted, junk skipped, faster-whisper's `word` or `text`
+    # sorted, junk skipped, faster-whisper's `word` or `text`; a zero-length word is a spoken word with a
+    # collapsed timestamp and stays (as a point), an end before the start is junk
+    assert [w.text for w in load_words(p)] == ["a", "b", "zero", "c"]
+    assert [w for w in load_words(p) if w.text == "zero"][0].duration == 0
     p.write_text('{"not": "a list"}', encoding="utf-8")
     with pytest.raises(ValueError):
         load_words(p)

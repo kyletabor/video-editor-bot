@@ -61,10 +61,15 @@ def save_words(path: str | Path, words: list[Word]) -> None:
 
 
 def load_words(path: str | Path) -> list[Word]:
-    """Read `[{start, end, word}]`; rows with bad numbers or empty text are skipped.
+    """Read `[{start, end, word}]`; rows with bad numbers, empty text or an end
+    before the start are skipped.
 
-    Sorted by start so callers can rely on order. Raises ValueError when the
-    file is not a JSON list at all (a wrong `--words` argument should be loud)."""
+    A zero-length word is kept as a point. faster-whisper emits one when its
+    alignment gives a word no audio frames (talk2 has 69 of 9247, mostly
+    pinned to the next word's start); the word was decoded, so it was spoken,
+    and a cut must not fall on it (cuts.py treats it as speech). Sorted by
+    start so callers can rely on order. Raises ValueError when the file is not
+    a JSON list at all (a wrong `--words` argument should be loud)."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise ValueError(f"{path}: expected a JSON list of {{start, end, word}}")
@@ -75,7 +80,7 @@ def load_words(path: str | Path) -> list[Word]:
             text = str(row.get("word") or row.get("text") or "").strip()
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
-        if text and end > start:
+        if text and end >= start:
             out.append(Word(start, end, text))
     out.sort(key=lambda w: (w.start, w.end))
     return out
