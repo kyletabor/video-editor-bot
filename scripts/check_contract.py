@@ -44,6 +44,13 @@ BAD_PLANS = {
     "reel filename not mp4": minimal(output={"dir": "o", "reel": {"filename": "reel.mov"}}),
     "unknown reel field": minimal(output={"dir": "o", "reel": {"transition": "dissolve"}}),
     "clip card without title": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "card": {"lines": ["x"]}}]),
+    # v1.2 music / transition rules
+    "music without path": minimal(output={"dir": "o", "reel": {"music": {"under": "cards"}}}),
+    "music under=speech": minimal(output={"dir": "o", "reel": {"music": {"path": "m.mp3", "under": "speech"}}}),
+    "music gain positive": minimal(output={"dir": "o", "reel": {"music": {"path": "m.mp3", "gain_db": 3}}}),
+    "transition kind wipe": minimal(output={"dir": "o", "reel": {"transition": {"kind": "wipe"}}}),
+    "transition too long": minimal(output={"dir": "o", "reel": {"transition": {"kind": "dip", "seconds": 5}}}),
+    "closing with 4 cards": minimal(output={"dir": "o", "reel": {"closing": [{"title": "a"}] * 4}}),
 }
 
 

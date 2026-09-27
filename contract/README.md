@@ -5,7 +5,7 @@ The only interface between `bot/` (Kyle's lane, produces a plan) and `render/`
 by the other side.
 
 - [`edit-plan.schema.json`](edit-plan.schema.json) — JSON Schema 2020-12, the
-  source of truth. Currently **v1.1**: v1 plus an optional reel (see below).
+  source of truth. Currently **v1.2**: v1 plus an optional reel, music, transitions and opening/closing cards (see below).
 - [`examples/one-clip-trim.json`](examples/one-clip-trim.json) — minimum viable
   plan: one clip, one segment, embedded captions, 16:9.
 - [`examples/two-clips-concat-vertical.json`](examples/two-clips-concat-vertical.json)
@@ -52,6 +52,23 @@ slide, with sparse explainer slides between sections.
 - Individual clip files are still written exactly as in v1.
 - Total length is the bot's responsibility (`clipbot reel --minutes N` targets N
   ±20 % including cards). The renderer warns above 10 minutes, never rejects.
+
+### v1.2 additions (2026-09-26, from Kyle's review of the first reel)
+
+- `output.reel.opening[]` (≤2 cards) after the intro, e.g. "What you'll learn";
+  `output.reel.closing[]` (≤3 cards) before the outro: the summary at the end.
+  Timeline becomes `[intro] + opening + Σ([card] + clip) + closing + [outro]`.
+- `output.reel.music {path, under, gain_db, duck_db, fade_seconds, loop}`: a bed
+  that plays under every card run (`under: cards`, default) faded at the run
+  edges, or under everything ducked below speech (`under: all`). The file must
+  be public domain or licensed for the project; `assets/music/LICENSE` records
+  provenance for anything checked in.
+- `output.reel.transition {kind: cut|dip|dissolve, seconds}` at every join.
+- `output.reel.audio_fade_seconds` (default 0.15): clip audio fades in and out
+  at each cut so speech never starts or stops abruptly.
+- Example: [`examples/reel-with-music.json`](examples/reel-with-music.json).
+  The base timeline and all v1.1 fields are unchanged; a renderer that ignores
+  v1.2 fields still produces a valid v1.1 reel.
 
 ## Renderer obligations (what `render/` must do)
 
@@ -113,6 +130,7 @@ Bump `version` only for breaking changes. Add optional fields freely, with
 defaults, and update the examples. The other lane reviews the PR.
 
 Changelog
+- v1.2 (2026-09-26, Kyle's agent): `output.reel.{opening,closing,music,transition,audio_fade_seconds}`. Backward compatible.
 - v1.1 (2026-09-25, Kyle's agent under Kyle's authority): `output.reel`,
   `clips[].card`, `$defs.card`. Backward compatible.
 - v1 (2026-09-25): initial.
