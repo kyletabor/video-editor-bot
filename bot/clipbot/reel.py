@@ -50,6 +50,7 @@ from .cuts import (
     sentence_spans,
     tighten,
 )
+from .framing import MAX_CLOSING_CARDS, Framing
 from .lessons import (  # noqa: F401 - CARD_SECONDS / clip_text / limits are re-exported for callers and tests
     CARD_SECONDS,
     CONTEXT_LIMIT,
@@ -617,7 +618,8 @@ def cut_moments(
             s, e = snapper.pad(start, end, lead, tail, duration)
         else:
             s, e = pad(start, end, lead, tail, duration)
-        rep = tighten(s, e, words, sil, fillers=fillers, pauses=pauses, max_silence=max_silence, keep_pause=keep_pause)
+        rep = tighten(s, e, words, sil, fillers=fillers, pauses=pauses, max_silence=max_silence, keep_pause=keep_pause,
+                      lead=lead, tail=tail)
         out.append(replace(m, start=start, end=end, segments=rep.segments))
         reports.append(rep)
     return out, reports
@@ -679,11 +681,22 @@ def build_reel_plan(
     takeaways: list[str] | None = None,
     transition: str = "dip",
     music: str | None = None,
+    framing: Framing | None = None,
 ) -> dict:
     """A v1 plan plus output.reel (contract v1.2): intro, "What you'll learn",
     one card per clip, "Takeaways" cards, a sign-off outro, `dip` transitions
     and clip audio fades. `music` is a repo-root-relative or absolute path the
-    caller has the rights to (contract/README.md, v1.2)."""
+    caller has the rights to (contract/README.md, v1.2).
+
+    `framing` (framing.py) overrides whatever it says: title, date, the opening
+    lines, the takeaways, the outro, card seconds, music gain and fade, the
+    transition. Every card's seconds are final before the runtime line on the
+    intro is computed, so the intro never disagrees with the file the renderer
+    writes (the third reel said 4:50 and ran 4:55 because the cards were
+    edited after the plan was built)."""
+    fr = framing or Framing()
+    title = fr.title or title
+    date = fr.date or date
     duration = float(getattr(source, "duration_seconds", 0.0) or 0.0) or None
     windows = [Window(m.start, m.end, m.score, m.takeaway, m.cue_indexes) for m in moments]
     plan = build_plan(
@@ -699,19 +712,30 @@ def build_reel_plan(
         "filename": "reel.mp4",
         "intro": {"title": clip_text(title, TITLE_LIMIT) or "Summary", "lines": [], "seconds": INTRO_SECONDS},
         "chapter_cards": "all",
-        "outro": outro_card(),
-        "transition": {"kind": transition, "seconds": TRANSITION_SECONDS},
+        "outro": fr.outro_card() or outro_card(),
+        "transition": {"kind": fr.transition_kind or transition, "seconds": fr.transition_seconds or TRANSITION_SECONDS},
         "audio_fade_seconds": AUDIO_FADE_SECONDS,
     }
-    opening = opening_card(lesson_lines(moments), title_hint=title)
+    if fr.outro_seconds is not None:
+        reel["outro"]["seconds"] = fr.outro_seconds
+    opening = opening_card(list(fr.what_you_will_learn) or lesson_lines(moments), title_hint=title)
     if opening:
+        if fr.opening_seconds is not None:
+            opening["seconds"] = fr.opening_seconds
         reel["opening"] = [opening]
-    closing = closing_cards(takeaways or [])
+    closing = closing_cards(list(fr.takeaways), max_cards=MAX_CLOSING_CARDS) if fr.takeaways else closing_cards(takeaways or [])
     if closing:
+        for card in closing:
+            if fr.closing_seconds is not None:
+                card["seconds"] = fr.closing_seconds
         reel["closing"] = closing
     if music:
         reel["music"] = {"path": music}
+        if fr.music_gain_db is not None:
+            reel["music"]["gain_db"] = fr.music_gain_db
+        if fr.music_fade_seconds is not None:
+            reel["music"]["fade_seconds"] = fr.music_fade_seconds
     plan["output"]["reel"] = reel
-    total = plan_runtime(plan)
+    total = plan_runtime(plan)  # every card now has its final seconds; nothing below changes the length
     reel["intro"]["lines"] = [f"Recorded {date}", f"{len(moments)} moments · {_ts(round(total))}"]
     return plan
