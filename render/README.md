@@ -85,7 +85,7 @@ after a failed media job; schema/semantic validation errors create no output.
 | `trim_silence` | Both values retain exact selected ranges. `true` permits tightening but does not require it; this renderer deliberately shaves zero seconds because amplitude alone cannot prove absence of speech. |
 | `takeaway`, `hook_offset_seconds` | Store the takeaway as MP4 title and informational hook offset as MP4 comment. No title-card effect or segment reordering is implied. |
 | `summary.path` | Copy the existing companion document by basename, byte for byte; preserve it if already at its destination. No PDF conversion or summary generation. |
-| `output.reel` (v1.1) | After every clip is verified, draw the cards, conform each segment in one `concat` filter graph, re-encode, verify the reel like a clip and publish `output.dir/<filename>` (default `reel.mp4`) in the same transaction: a reel failure publishes nothing. `chapter_cards`: `auto` shows a card only where a clip has `card`, `all` synthesizes one from `takeaway`, `none` drops chapter cards but keeps intro/outro. Warn above 10 minutes, never reject. A reel named after a clip is rejected as a filename collision. |
+| `output.reel` (v1.1) | After every clip is verified, draw the cards, conform every card and clip into a piece of exact length in its own FFmpeg process, join the pieces (video stream-copied, audio joined sample-exactly and encoded once), verify the reel like a clip and publish `output.dir/<filename>` (default `reel.mp4`) in the same transaction: a reel failure publishes nothing. `chapter_cards`: `auto` shows a card only where a clip has `card`, `all` synthesizes one from `takeaway`, `none` drops chapter cards but keeps intro/outro. Warn above 10 minutes, never reject. A reel named after a clip is rejected as a filename collision. |
 | `reel.intro`, `reel.outro`, `clips[].card` | Full-frame dark slide drawn with Pillow's bundled font at the reel's size: title (up to three rows), up to four lines (up to three rows each), chapter footer `k of N · h:mm:ss` naming the clip's place and its first segment's source time. Text wraps on word boundaries only and, when it does not fit, the font shrinks in 12 % steps (100 → 88 → 76 … → 40 %) instead of the text being cut: every contract-valid card (80-character title, 4 × 120-character lines) is shown in full on 16:9, 9:16 and 1:1, and the text block always ends above the footer band (see [Card text fit](#card-text-fit)). Shown for `seconds` (default 3) with silence at the source's sample rate and channel layout; a silent source gives a silent reel. |
 | `reel.opening[]`, `reel.closing[]` (v1.2) | Cards after the intro and before the outro, drawn like the others but without a chapter footer (they are not chapters). Timeline: `[intro] + opening + Σ([card] + clip) + closing + [outro]`. |
 | `reel.music` (v1.2) | A bed under every run of consecutive cards (`under: cards`, faded at the run edges, continuing through the reel from a running offset) or under the whole reel at `duck_db` beneath speech and `gain_db` beneath cards (`under: all`). Looped when `loop` and the file is shorter than needed. Missing file: rejected before any tool starts. Source without audio: rejected. Never clips: see [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades). |
@@ -226,49 +226,75 @@ muxer limit unrelated to this change.
 
 The reel is `[intro] + for each clip ([card] + clip) + [outro]`, hard cuts only,
 exactly as the contract's timeline says. Cards are drawn by `cliprender.cards`
-(`Pillow`, bundled font, no font files) at the clips' output size, then encoded
-into segments of exactly `seconds` at the reel's frame rate, paired with generated
-silence. `cliprender.reel` feeds every segment through one `concat` filter graph
-that scales/pads to the first clip's geometry, conforms to the source's nominal
-frame rate (`fps=...:start_time=0`, so a clip whose first frame sits after its
-audio start opens with a copy of that frame instead of a hole), resamples to the
-source's sample rate and channel layout, and re-encodes with the clips' settings
-(H.264 CRF 18 veryfast, yuv420p, AAC 192 kbit/s, fast start), constant frame rate.
+(`Pillow`, bundled font, no font files) at the clips' output size. `cliprender.reel`
+then builds the reel in bounded steps, one FFmpeg process per step, none of which
+opens more than three media inputs:
 
-Why not the concat demuxer with stream copy: it is faster, but it needs
-bit-identical codec parameters and inherits each segment's AAC priming and
-timescale quirks at every junction, and those behave differently on FFmpeg 4.4 and
-7. Re-encoding gives one continuous timeline whose duration is the sum of its
-parts; verification checks stream counts, geometry, that every stream's duration
-is within 0.2 s per segment of that sum, audio start and channels, and a full
-`-xerror` decode. The reel is staged and published with the clips; a failed reel
-publishes nothing from the run. The reel title metadata is the intro title.
+1. **Pieces.** Every timeline item (a card PNG looped at the reel's frame rate over
+   generated silence, or a clip file) is conformed on its own into a *piece*: video
+   scaled/padded to the first clip's geometry, at the source's nominal frame rate
+   (`fps=...:start_time=0`, so a clip whose first frame sits after its audio start
+   opens with a copy of that frame instead of a hole), yuv420p; audio at the source's
+   sample rate and channel layout. Both are pinned to an exact length on the frame
+   grid: `round(seconds × fps)` frames (`tpad` repeats the last frame if the video
+   runs short, `trim` drops any surplus) and the matching sample count (`apad`,
+   `atrim`), so video and audio cannot drift apart at a join. The video is encoded
+   with the clips' settings (H.264 CRF 18 veryfast, yuv420p, `-bf 0`, explicit
+   BT.709/limited-range tags so a card drawn in RGB and a clip decoded from the
+   recording get the same parameter sets); the audio is written as a float WAV.
+2. **Join.** The video pieces are joined by the concat demuxer with the stream copied
+   (`-c:v copy`, `-auto_convert 0`, every file's `duration` declared as its frames
+   over the rate so the containers' own lengths are never consulted); the WAVs are
+   concatenated byte for byte by the renderer (`join_wavs`), which also checks that
+   the total is exactly the sum of the pieces before a single AAC frame is encoded.
+   One process muxes the copied video with the AAC encoded once from that WAV
+   (192 kbit/s, fast start, title metadata from the intro).
+
+Why not the single `concat` filter graph that did this before: FFmpeg opens a decoder
+for every input of a graph and, from 7.0, reads and decodes ahead on all of them, so
+the 25-input graph of a 4.9-minute 1080p reel held about 2.2 GB of frames and was
+killed by the kernel on a box with 2.7 GB free (the same plan fitted at 720p). Memory
+grew with the number of pieces; now it is that of one piece (see the measurements
+below). Why not stream-copy the clips themselves: their AAC priming and the cards'
+would open gaps at every junction, and their parameter sets would have to match by
+luck; conforming each piece once, with one encoder configuration, makes the copy join
+exact by construction. Verification is unchanged: stream counts, geometry, every
+stream's duration within 0.2 s per segment of the sum of the pieces, audio start and
+channels, and a full `-xerror` decode. The reel is staged and published with the
+clips; a failed reel publishes nothing from the run.
 
 ## Reel v1.2: opening/closing cards, music, transitions, fades
 
 Contract v1.2 adds five optional fields under `output.reel`. A plan that uses none of
-them renders exactly as a v1.1 reel: same command line, same filter graph, byte for
-byte (`cliprender.reel.concat_graph` is unchanged and a test pins its text). As soon
-as one v1.2 field is present, the schema defaults apply to the rest (`transition`
-`cut`, `audio_fade_seconds` 0.15). The timeline becomes
+them conforms its pieces with no v1.2 filter at all (no fade, no transition, no
+music; `tests/test_reel_style.py` pins that graph text), so the v1.1 reel is the plain
+join of its pieces. As soon as one v1.2 field is present, the schema defaults apply
+to the rest (`transition` `cut`, `audio_fade_seconds` 0.15). The timeline becomes
 `[intro] + opening + Σ([card] + clip) + closing + [outro]`; opening and closing cards
 are drawn like the others but carry no `k of N` footer because they are not chapters.
 
-Everything happens inside the one reel filter graph (`cliprender.reel.reel_graph`),
-with filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
+Every v1.2 effect is applied per piece or per join, in the bounded steps above, with
+filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
 
 - **Audio fades** (`audio_fade_seconds`): `afade` in and out on every clip's audio at
-  its edges, never longer than half the clip. Cards are silent and get none.
-- **Transitions** (`transition`): `cut` keeps the `concat` join. `dip` fades each
-  segment's video to black over half the transition and the next one in from black
-  over the other half (`fade`, inside the segments), so the reel length is unchanged
-  and the audio is untouched. `dissolve` cross-fades consecutive segments with
-  `xfade` (video) and `acrossfade` (audio, triangular curves); the reel shortens by
-  the transition per join and the verification expects exactly that. A transition
+  its edges, inside the clip's piece, never longer than half the clip. Cards are
+  silent and get none.
+- **Transitions** (`transition`): `cut` is the plain join. `dip` fades each piece's
+  video to black over half the transition and the next one in from black over the
+  other half (`fade`, inside the pieces), so the reel length is unchanged and the
+  audio is untouched. `dissolve` is quantized to whole frames (`transition_frames`)
+  and rendered as a *bridge* per join: while a piece is conformed, its first and last
+  transition's worth of frames and samples are split off into raw files (`head`,
+  `tail`) in the same pass, its body is what the reel plays, and a second small
+  process cross-fades the outgoing tail into the incoming head (`xfade` for the
+  video, pinned to exactly the transition's frames; two triangular `afade`s summed
+  for the audio, the same curve as `acrossfade`). The reel shortens by the
+  transition per join and the verification expects exactly that. A transition
   longer than the segments can hold (a 1 s card with a 1.5 s dissolve is a legal
   plan) is shortened for the whole reel with a warning: a dip needs every segment
   at least as long as the transition, a dissolve needs the first and last segment
-  at least that long and every middle segment at least twice that.
+  at least that long and every middle segment at least twice that, and on the frame
+  grid every piece keeps at least one frame of its own between its bridges.
 - **Music bed** (`music`): the file is decoded once to a 16-bit WAV at the reel's
   sample rate and layout (`_reel/bed-once.wav`, bounded by `-t` to what the reel
   needs) and, when `loop` is on and the bed is shorter than what it must cover,
@@ -279,9 +305,11 @@ with filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
   chapter card is one run; closing + outro another) gets one stretch of the bed at
   `gain_db`, faded in and out over `fade_seconds` (at most half the run), cut with
   `atrim` from a running offset so the music continues through the reel instead of
-  restarting at each card, placed with `adelay` in samples, and summed onto the
-  speech with `amix normalize=0` (`amix` otherwise divides by the input count and
-  would halve the speech). With `under: all`, one base stretch covers the whole reel
+  restarting at each card, written once as its own WAV with its level and edge fades
+  (`bed_piece_graph`), and mixed into every reel segment it overlaps (`mix_music`: the
+  segment's WAV plus the overlapping part of the stretch, cut and placed by sample
+  count, summed with `amix normalize=0`, since `amix` otherwise divides by the input
+  count and would halve the speech). With `under: all`, one base stretch covers the whole reel
   at `duck_db` and each card run adds a coherent copy at `gain_db − duck_db` taken
   from the same bed position, so the sum is exactly `gain_db` under cards, `duck_db`
   under speech, ramping over `fade_seconds` at the boundaries: two levels, no
@@ -306,10 +334,10 @@ with filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
   full scale (or under the speech's own peak when the recording is already hotter
   than that), plus 0.5 dB for AAC quantization.
 
-FFmpeg 4.4 differences: `xfade` emits one frame more over a dissolve chain than 7.0.2
-(83 frames for three 3 s segments at 10 fps versus 82), well inside the 0.2 s per
-segment duration tolerance; `fade`, `afade`, `acrossfade`, `adelay`, `amix`, `astats`
-and `-stream_loop` on WAV measured identical on both builds.
+FFmpeg 4.4 differences: `xfade` emits one frame more than 7.0.2 over a chain of
+segments; a bridge is pinned to exactly the transition's frames (`tpad`, `trim`), so
+both builds now give the same frame count. `fade`, `afade`, `adelay`, `amix`, `apad`,
+`tpad`, `astats` and `-stream_loop` on WAV measured identical on both builds.
 
 ## Development and measured checks
 
@@ -522,6 +550,48 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   1 ms, the same end; skipped on 4.4 where the legacy graph itself drops a frame); a part
   boundary inside a cue leaves burned and sidecar captions identical; a failed join publishes
   nothing.
+
+### Changes on 2026-09-27 (Kyle's agent): reel assembled in bounded steps — for Ramsey's review
+
+- **Why**: with every clip of the Talk #2 plan rendered (peak 0.44 GB each after the
+  parts change), the reel step was killed by the kernel at 2.2 GB anonymous RSS
+  (`Out of memory: Killed process (ffmpeg) total-vm:6462856kB, anon-rss:2226680kB`) on the
+  8-core ARM box with 2.7 GB free. The single filter graph over 15 card segments, 10 clips
+  and the bed decoded ahead on every input; the same plan fitted at 720p and died at 1080p,
+  so the memory scaled with the number and size of the inputs, not with any one step.
+- **What** (`cliprender/reel.py`, see [Reel assembly](#reel-assembly-v11) and
+  [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades)): every item is
+  conformed on its own into a piece of exactly so many frames and samples with one encoder
+  configuration (`piece_graph`, `encode_piece`; cards straight from their PNG, so a card is
+  encoded once and `encode_card_segment` is gone); dips and audio fades are applied inside
+  the piece; a dissolve becomes a bridge per join, cross-faded from the head and tail split
+  off during the neighbours' conform (`encode_bridge`); each stretch of the music bed is
+  written once (`render_beds`) and mixed into the segments it overlaps (`mix_music`); the
+  WAVs are joined by the renderer with the sample count checked (`join_wavs`), the video by
+  the concat demuxer with `-c:v copy`, and the AAC is encoded once at the mux. Verification,
+  the headroom rule, the transactional publish and `renderer.py`'s call are unchanged. No
+  FFmpeg process of the reel step opens more than three media inputs. The old
+  `concat_graph`/`reel_graph`/`music_graph` and card encoder survive verbatim in
+  `tests/legacy_reel.py` as the reference the pieces are compared against.
+- **Measured** (FFmpeg 7.0.2, RSS of every process polled every 0.2 s while assembling the
+  Talk #2 reel, 294.8 s of 1080p24 in 25 pieces with dips and music under 12 card runs, from
+  the ten rendered clips): before, the single-graph `ffmpeg` reached 1670 MB 34 s in and was
+  still climbing when the measurement's 1.5 GB guard stopped it (the kernel had killed the
+  real run at 2.2 GB); after, 512 MB peak for the largest process (a 1080p piece conform),
+  572 MB for the whole process tree, 110 s wall for the whole reel step, 7076 frames,
+  294.833 s of video and audio, verification passed.
+- **Tests** (renderer suite 149 → 158 on FFmpeg 7.0.2; on 4.4.2 156 passed, 1 skipped and the
+  one pre-existing sub-tick muxer failure, every reel test green):
+  `tests/test_reel_style.py` pins the piece, bridge, bed and mix graphs, the frame grid and
+  the WAV join; `tests/test_reel_bounded.py` renders the music fixture reel with cut, dip and
+  dissolve and asserts that no reel-step command has more than three `-i` (and that the widest
+  mix, `under: all`, has exactly three), then assembles the same reel with the legacy graph
+  and compares: the pieces give exactly the timeline's frames and samples on both builds,
+  where the single graph's length depended on the build (one frame and 64 ms long on 7.0.2,
+  its card silences outlasting the cards; 107 ms short on 4.4.2), every frame's luminance
+  matches within 1.5 except a dip's fade ramp meeting that drift, and every piece's interior
+  has the same music and speech levels. The existing music, transition, style and reel tests
+  pass unchanged.
 
 ## Card text fit
 
