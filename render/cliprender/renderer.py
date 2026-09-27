@@ -4,7 +4,6 @@ import json
 import math
 import os
 import shutil
-import sys
 import tempfile
 from bisect import bisect_left
 from contextlib import contextmanager
@@ -14,8 +13,15 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from .captions import Cue, format_srt, parse_srt, retime, tidy_for_burn
-from .media import RenderError, Tools, geometry, inspect_media
-from .reel import MAX_RECOMMENDED_SECONDS, planned_seconds, reel_fps, render_reel, timeline
+from .media import RenderError, Tools, geometry, inspect_media, warn
+from .reel import (
+    MAX_RECOMMENDED_SECONDS,
+    planned_seconds,
+    reel_fps,
+    reel_style,
+    render_reel,
+    timeline,
+)
 
 BOUNDS = {"internal": (15, 120), "linkedin": (15, 90), "shorts": (15, 60), "email": (15, 60)}
 # Containers whose keyframe index makes an input seek land exactly and whose audio timestamps
@@ -47,10 +53,6 @@ def normalize_embedded(cues, origin):
         for c in cues
         if c.end > origin
     ]
-
-
-def warn(message):
-    print(f"cliprender: warning: {message}", file=sys.stderr)
 
 
 def number(value):
@@ -368,12 +370,17 @@ def render_plan(
     if reel_dest:
         # The same collision rules as clips: a reel named after a clip is rejected below.
         destinations.append(reel_dest)
+    # v1.2 options resolve now so a missing music file fails before any tool starts.
+    style = reel_style(reel, lambda value: resolve(root, value)) if reel is not None else None
+    music = style.music.path if style is not None and style.music is not None else None
+    if music:
+        require_file(music, "music bed")
     summary_dest = output / summary.name if summary else None
     if summary and summary != summary_dest:
         destinations.append(summary_dest)
     elif summary_dest and summary_dest in destinations:
         raise RenderError("Summary path collides with a clip output")
-    protected = {source, plan_path, caption_source, summary}
+    protected = {source, plan_path, caption_source, summary, music}
     if len(set(destinations)) != len(destinations):
         raise RenderError("Output filenames collide with one another")
     for dest in destinations:
@@ -389,6 +396,11 @@ def render_plan(
     tools = Tools(ffmpeg, ffprobe, timeout)
     data = tools.probe(source)
     video, audio, raw_origin = inspect_media(data)
+    if music and audio is None:
+        raise RenderError(
+            "Reel music needs a source with an audio track; a silent source gives a reel with "
+            "no audio to mix the bed into"
+        )
     origin = number(raw_origin)
     seekable = data.get("format", {}).get("format_name") in SEEKABLE_FORMATS and Fraction(
         video["time_base"]
@@ -548,6 +560,7 @@ def render_plan(
                     tools.cfr_flags(),
                     reel_dest.name,
                     reel.get("intro", {}).get("title", reel_dest.stem),
+                    style=style,
                 )
             except (RenderError, ValueError, OSError) as exc:
                 raise RenderError(f"Reel: {exc}; no outputs from this run published") from exc
