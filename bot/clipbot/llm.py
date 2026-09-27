@@ -4,9 +4,12 @@ Why: the heuristic scores word density; a model reads for meaning ("this is
 where they decided X"). We send the outline (30 s blocks, outline.py) to Claude
 in chunks of at most ~8k tokens, ask each chunk for candidate moments as JSON
 (structured output, so the shape is guaranteed), validate the numbers, then
-snap and fit them exactly like human `--moments` (reel.py). Any failure, no
-key, no SDK, API error, refusal, bad numbers, falls back to the heuristic with
-one printed line: a reel is never blocked on the network.
+snap and fit them exactly like human `--moments` (reel.py). Since v1.2 every
+proposal also carries a `lesson` and a `context` line, written for "a founder
+who missed the session": the chapter card leads with the lesson, not with a
+quote (lessons.py). Any failure, no key, no SDK, API error, refusal, bad
+numbers, falls back to the heuristic with one printed line: a reel is never
+blocked on the network.
 
 Needs the `llm` extra and a credential:
 
@@ -39,10 +42,18 @@ SCHEMA = {
                     "start": {"type": "number", "description": "seconds from the start of the recording"},
                     "end": {"type": "number", "description": "seconds from the start of the recording"},
                     "title": {"type": "string", "description": "card title, at most 80 characters"},
+                    "lesson": {
+                        "type": "string",
+                        "description": "what a viewer who missed the session learns from this moment, as a statement, at most 80 characters",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "what the room already knew that the viewer needs first, at most 120 characters",
+                    },
                     "why": {"type": "string", "description": "one line: Decision / Demo / Q&A ..., at most 120 characters"},
                     "score": {"type": "number", "description": "1 (weak) to 10 (must keep)"},
                 },
-                "required": ["start", "end", "title", "why", "score"],
+                "required": ["start", "end", "title", "lesson", "context", "why", "score"],
                 "additionalProperties": False,
             },
         }
@@ -75,17 +86,20 @@ def chunk_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
 def prompt(chunk: str, minutes: float, want: int, n: int, total: int) -> str:
     return (
         f"You are choosing moments for a {minutes:g}-minute summary reel of a recorded work session. "
-        f"Below is part {n} of {total} of its transcript in 30-second blocks; each block starts with "
-        "[h:mm:ss], the time from the start of the recording.\n\n"
-        f"Pick up to {want} self-contained moments from THIS part that a busy colleague who missed the "
-        "session would most want to see: decisions, demos, quotable claims, a question together with its "
-        "answer. Skip greetings, logistics and screen-share fumbling. Each moment is 15-60 seconds, "
-        "starts where a sentence starts, ends where one ends, and covers one idea. Give start and end "
-        "in seconds from the start of the recording (convert the [h:mm:ss] stamps; edges may fall inside "
-        "a block), a title of at most 80 characters, a one-line why of at most 120 characters "
-        "(for example 'Decision', 'Demo', 'Q&A: who asked'), and a score from 1 (weak) to 10 (must keep). "
-        "Return an empty list if nothing here is worth keeping.\n\n"
-        f"Transcript part {n}:\n\n{chunk}"
+        "The viewer is a founder who missed the session: each moment must teach them something they "
+        f"can use. Below is part {n} of {total} of the transcript in 30-second blocks; each block starts "
+        "with [h:mm:ss], the time from the start of the recording.\n\n"
+        f"Pick up to {want} self-contained moments from THIS part that such a viewer would most want to "
+        "see: decisions and the reasoning behind them, demos, quotable claims, a question together with "
+        "its answer, lessons learned. Skip greetings, logistics, banter and screen-share fumbling. Each "
+        "moment is 15-60 seconds, starts where a sentence starts, ends where one ends, and covers one "
+        "idea. Give start and end in seconds from the start of the recording (convert the [h:mm:ss] "
+        "stamps; edges may fall inside a block); a title of at most 80 characters; a lesson of at most "
+        "80 characters (the one thing the viewer learns, as a statement they could repeat); a context "
+        "line of at most 120 characters (what the room already knew that the viewer needs first); a "
+        "one-line why of at most 120 characters (for example 'Decision', 'Demo', 'Q&A: who asked'); and "
+        "a score from 1 (weak) to 10 (must keep). Return an empty list if nothing here is worth keeping."
+        f"\n\nTranscript part {n}:\n\n{chunk}"
     )
 
 
@@ -103,15 +117,18 @@ def validate_specs(specs: list[dict], duration: float) -> list[dict]:
             score = float(m.get("score", 5) or 5)
         except (TypeError, ValueError):
             score = 5.0
-        out.append(
-            {
-                "start": s,
-                "end": min(e, duration),
-                "title": str(m.get("title") or "")[:80],
-                "why": str(m.get("why") or "")[:120],
-                "score": score,
-            }
-        )
+        spec = {
+            "start": s,
+            "end": min(e, duration),
+            "title": str(m.get("title") or "")[:80],
+            "why": str(m.get("why") or "")[:120],
+            "score": score,
+        }
+        if m.get("lesson"):
+            spec["lesson"] = str(m["lesson"])[:80]
+        if m.get("context"):
+            spec["context"] = str(m["context"])[:120]
+        out.append(spec)
     return out
 
 

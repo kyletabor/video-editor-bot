@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from .captions import Cue
+from .lessons import teachable
 from .select import _STOP, _WORD, clean_text, keyword_hits
 
 _DECISION = re.compile(
@@ -66,13 +67,17 @@ def score_sentence(s: Sentence, focus: set[str] | None = None) -> float:
         return 0.0
     score = len(content) / len(words) * 2.0 + min(len(content), 12) * 0.2
     score += 1.0 * len(_DECISION.findall(s.text))
+    score += 0.5 * teachable(s.text)  # explanations and rules up, banter and logistics down
     if focus:
         score += 1.5 * keyword_hits(Cue(0, 1, s.text), focus)
     return score
 
 
+MAX_SUMMARY_SENTENCE = 300  # longer "sentences" are unpunctuated ASR run-ons, not quotes
+
+
 def executive_summary(cues: list[Cue], n: int = 4, focus: set[str] | None = None) -> list[Sentence]:
-    sents = sentences(cues)
+    sents = [s for s in sentences(cues) if len(s.text) <= MAX_SUMMARY_SENTENCE]
     ranked = sorted(sents, key=lambda s: score_sentence(s, focus), reverse=True)
     picked: list[Sentence] = []
     for s in ranked:
@@ -110,6 +115,11 @@ def to_markdown(
     focus: set[str] | None = None,
 ) -> str:
     lines = [f"# {title}", "", f"Source: `{source_path}` · {_ts(duration)} long · {len(cues)} caption cues", ""]
+    reel = (plan or {}).get("output", {}).get("reel") if plan else None
+    closing = [ln for card in (reel or {}).get("closing", []) for ln in card.get("lines", [])]
+    if closing:
+        # The same takeaways the reel closes on, first: a reader in a hurry stops here.
+        lines += ["## Takeaways", ""] + [f"- {ln}" for ln in closing] + [""]
     lines += ["## Executive summary", ""]
     summary = executive_summary(cues, focus=focus)
     if summary:
@@ -119,7 +129,6 @@ def to_markdown(
     else:
         lines.append("- (no summarizable speech found)")
     lines.append("")
-    reel = (plan or {}).get("output", {}).get("reel") if plan else None
     if reel and plan.get("clips"):
         # A reel's clips are its chapters: list them as the viewer will meet them,
         # with source timestamps so a reader can jump into the full recording.

@@ -172,6 +172,7 @@ def clean_text(text: str) -> str:
     text = _FILLER.sub("", text)
     text = re.sub(r"(?:^|\s)-(?=\s|$)", " ", text)  # " - " separators, not hyphenated words
     text = re.sub(r"\s*,(?:\s*,)+", ",", text)  # ", ," left by a removed filler
+    text = re.sub(r"([.!?;:])\s*,(?=\s|$)", r"\1", text)  # "often. Uh, but" -> "often. , but" -> "often. but"
     # "quick ," -> "quick," but leave "a .exe" / ".env" alone: only glue punctuation that ends a clause
     text = re.sub(r"\s+([,.!?;:])(?=\s|$)", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip(" ,;:")

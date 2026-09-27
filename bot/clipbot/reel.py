@@ -1,38 +1,73 @@
-"""Pick the moments of a long session and assemble a contract v1.1 reel plan.
+"""Pick the moments of a long session and assemble a contract v1.2 reel plan.
 
 Why a reel and not one clip: the product goal is a 2.5-5 minute SUMMARY of a
 1-2 hour recording: several key moments in chronological order, opened by an
-intro slide, each introduced by a short explainer card (contract/README.md,
-"Reel"). This module owns the "which moments" question; render/ owns pixels.
+intro slide, each introduced by a short explainer card, closed by takeaways
+(contract/README.md, "Reel"). This module owns the "which moments" question;
+render/ owns pixels.
 
 Two ways in, one way out:
 
 - `pick_moments(cues, minutes)` is heuristic v2. It splits the session into K
   buckets so the picks SPREAD across the whole recording (a summary that only
-  covers the first ten minutes is not a summary), takes the densest
-  sentence-aligned window in each bucket, drops near-duplicates, then adds or
-  drops windows until the runtime, cards included, lands within +-20 % of the
-  target.
-- `moments_from_specs(specs, cues)` takes {start, end, title, ...} records
-  from a human (`clipbot outline` skeleton) or a model (llm.py) and snaps them
-  to caption-cue boundaries so clips open and close on caption edges.
+  covers the first ten minutes is not a summary), takes the densest, most
+  teachable sentence-aligned window in each bucket, drops near-duplicates, then
+  adds or drops windows until the runtime, cards included, lands within +-20 %
+  of the target.
+- `moments_from_specs(specs, cues)` takes {start, end, title, lesson, ...}
+  records from a human (`clipbot outline` skeleton) or a model (llm.py).
 
-`build_reel_plan` turns either list of `Moment`s into the plan.
+Both snap every edge OUTWARD to a sentence boundary (cuts.snap_outward): the
+first reel cut people off mid-sentence because edges landed on Meet's 4 s cue
+grid. A Moment's start/end are those speech edges; `cut_moments` turns each
+into a keep-list with fillers and long pauses removed, and `build_reel_plan`
+adds the lead/tail air and writes the plan. moments.json (`Moment.spec`) keeps
+the speech edges, so feeding it back re-snaps to the same sentences instead of
+growing by one sentence per round trip.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .captions import Cue
+from .cuts import (
+    LEAD_SECONDS,
+    MAX_SILENCE,
+    TAIL_SECONDS,
+    CutReport,
+    Snapper,
+    Span,
+    pad,
+    sentence_spans,
+    snap_outward,
+    tighten,
+)
+from .lessons import (  # noqa: F401 - CARD_SECONDS / clip_text / limits are re-exported for callers and tests
+    CARD_SECONDS,
+    CONTEXT_LIMIT,
+    LESSON_LIMIT,
+    LINE_LIMIT,
+    TITLE_LIMIT,
+    clip_text,
+    closing_cards,
+    opening_card,
+    outro_card,
+    teachable,
+)
 from .plan import PRESET_BOUNDS, build_plan
 from .select import _STOP, _WORD, Window, clean_text, score_cue
 from .speakers import parse_clock
-from .summarize import _DECISION, _similar, _ts, score_sentence, sentences
+from .summarize import _DECISION, _similar, _ts, executive_summary, score_sentence, sentences
+from .words import Word, words_from_cues
 
 INTRO_SECONDS = 4
-CARD_SECONDS = 3
+# What the plan adds around the moments (build_reel_plan): "What you'll learn" (<= 7.5 s),
+# "Takeaways" (<= 7.5 s), the outro (3 s), and lead/tail air on every clip. The picker
+# budgets for them so the whole reel, not just the clips, lands in the band.
+BOOKENDS_SECONDS = 18.0
+PAD_SECONDS = LEAD_SECONDS + TAIL_SECONDS
 SECONDS_PER_MOMENT = 35.0  # ~30 s of speech + its 3 s card + slack
 MIN_MOMENTS = 2  # one clip is a clip, not a reel
 TOLERANCE = 0.20  # contract/README.md: runtime within +-20 % of the target
@@ -40,9 +75,11 @@ MIN_WINDOW = 15.0
 MAX_WINDOW = 60.0
 MAX_GAP = 5.0  # a longer silence inside a window ends it
 DUPLICATE_JACCARD = 0.5
-TITLE_LIMIT = 80
 TAKEAWAY_LIMIT = 200
-LINE_LIMIT = 120
+TEACHABLE_WEIGHT = 0.6  # per teachable() point, on a cue's content score
+MIN_MOMENT_AFTER_OVERLAP = 1.0  # a moment swallowed by its neighbour is dropped
+TRANSITION_SECONDS = 0.4
+AUDIO_FADE_SECONDS = 0.15
 
 # Labels for the card's "why" line. _DECISION (summarize.py) is deliberately broad
 # for scoring; the label needs the narrow version or every card says "Decision".
@@ -57,27 +94,43 @@ _DEMO = re.compile(
 
 @dataclass(frozen=True)
 class Moment:
-    start: float
+    start: float  # speech edges: sentence start / end (no lead/tail air)
     end: float
     takeaway: str  # one sentence, <= 200 chars (clip.takeaway)
-    title: str  # <= 80 chars (card title)
+    title: str  # <= 80 chars (card title when there is no lesson)
     why: str = ""  # one line for the card: "Decision · Kyle Tabor"
     lines: tuple[str, ...] = ()
     score: float = 0.0
     speaker: str | None = None
     cue_indexes: tuple[int, ...] = ()
+    lesson: str = ""  # <= 80: what a viewer who missed the session learns
+    context: str = ""  # <= 120: what the room already knew
+    segments: tuple[tuple[float, float], ...] = ()  # keep-list after cut_moments; empty = whole
+    requested: tuple[float, float] | None = None  # the span before snapping, for the report
 
     @property
     def duration(self) -> float:
         return self.end - self.start
 
+    @property
+    def kept(self) -> float:
+        """Seconds that reach the screen."""
+        return sum(b - a for a, b in self.segments) if self.segments else self.duration
+
     def card(self) -> dict:
-        lines = [clip_text(ln, LINE_LIMIT) for ln in (self.lines or ((self.why,) if self.why else ()))]
-        return {"title": self.title, "lines": [ln for ln in lines if ln][:4], "seconds": CARD_SECONDS}
+        """Chapter card. With a lesson: title = lesson, lines = [context, why];
+        without: title = title, lines = lines or [why]."""
+        body = list(self.lines) if self.lines else ([self.why] if self.why else [])
+        if self.lesson:
+            title, body = self.lesson, [self.context, *body]
+        else:
+            title = self.title
+        lines = [clip_text(ln, LINE_LIMIT) for ln in body if ln]
+        return {"title": clip_text(title, TITLE_LIMIT), "lines": [ln for ln in lines if ln][:4], "seconds": CARD_SECONDS}
 
     def spec(self) -> dict:
         """This moment as a --moments record (moments.json round-trip)."""
-        return {
+        out = {
             "start": round(self.start, 3),
             "end": round(self.end, 3),
             "title": self.title,
@@ -85,6 +138,11 @@ class Moment:
             "lines": list(self.lines),
             "why": self.why,
         }
+        if self.lesson:
+            out["lesson"] = self.lesson
+        if self.context:
+            out["context"] = self.context
+        return out
 
 
 def _strip_orphan_quotes(text: str) -> str:
@@ -122,20 +180,11 @@ def tidy_sentence(text: str) -> str:
     return text
 
 
-def clip_text(text: str, limit: int) -> str:
-    """Clean and cut at a word boundary; the contract caps titles at 80 and lines at 120."""
-    text = clean_text(text)
-    if len(text) <= limit:
-        return text
-    cut = text[: limit - 1]
-    if " " in cut[limit // 2:]:
-        cut = cut[: cut.rfind(" ")]
-    return cut.rstrip(" ,;:.") + "…"
-
-
 def runtime(moments: list[Moment]) -> float:
-    """Reel length including the intro and one card per clip (chapter_cards = all)."""
-    return INTRO_SECONDS + sum(CARD_SECONDS + m.duration for m in moments)
+    """Estimated reel length: intro, bookend cards, and per clip its card, its kept
+    speech and the lead/tail air. `plan_runtime` measures the real thing once the
+    plan exists."""
+    return INTRO_SECONDS + BOOKENDS_SECONDS + sum(CARD_SECONDS + PAD_SECONDS + m.kept for m in moments)
 
 
 def target_band(minutes: float) -> tuple[float, float, float]:
@@ -145,35 +194,54 @@ def target_band(minutes: float) -> tuple[float, float, float]:
 
 def content_score(cue: Cue) -> float:
     """Request-less cue score: word density and questions (select.score_cue with no
-    keywords) plus decision language (summarize._DECISION)."""
-    return score_cue(cue, set()) + 0.75 * len(_DECISION.findall(cue.text))
+    keywords), decision language (summarize._DECISION) and teachable phrasing
+    (lessons.teachable: explanations and rules up, banter and logistics down)."""
+    return score_cue(cue, set()) + 0.75 * len(_DECISION.findall(cue.text)) + TEACHABLE_WEIGHT * teachable(cue.text)
 
 
 def _ends_sentence(c: Cue) -> bool:
     return c.text.rstrip().endswith((".", "!", "?"))
 
 
-def candidate_windows(cues: list[Cue], lo: float, hi: float, target_len: float) -> list[Window]:
+def spans_for(cues: list[Cue], words: list[Word] | None = None) -> list[Span]:
+    """Sentence spans from real word timings when there are any, else estimated
+    from the cues (words.words_from_cues)."""
+    return sentence_spans(words if words else words_from_cues(cues))
+
+
+def candidate_windows(
+    cues: list[Cue], lo: float, hi: float, target_len: float, spans: list[Span] | None = None
+) -> list[Window]:
     """The best window starting at each cue.
 
     A window is a run of consecutive cues with lo <= duration <= hi and no
-    silence longer than MAX_GAP. Score = sum(content) / max(duration, target_len):
+    silence longer than MAX_GAP. Its edges are snapped outward to sentence
+    boundaries first (`spans`), so the bounds and the score apply to the clip a
+    viewer would actually see. Score = sum(content) / max(duration, target_len):
     adding a cue helps until the window reaches the target length, after that
     only if it raises the per-second average, so windows stop where the good
     part ends instead of always running to `hi`. Edges on a sentence boundary
     earn a bonus so clips open and close on a sentence (contract obligation 5).
     """
     base = [content_score(c) + 0.5 for c in cues]  # +0.5: speech has value even when plain
-    out: list[Window] = []
     n = len(cues)
+    if spans:
+        snapper = Snapper(spans)
+        starts = [snapper.start(c.start) for c in cues]
+        ends = [snapper.end(c.end) for c in cues]
+    else:
+        starts = [c.start for c in cues]
+        ends = [c.end for c in cues]
+    out: list[Window] = []
     for i in range(n):
         starts_clean = i == 0 or _ends_sentence(cues[i - 1]) or cues[i - 1].speaker != cues[i].speaker
         total = 0.0
         best: Window | None = None
+        shortest: Window | None = None
         for j in range(i, n):
             if j > i and (cues[j].start < cues[j - 1].start or cues[j].start - cues[j - 1].end > MAX_GAP):
                 break
-            dur = cues[j].end - cues[i].start
+            dur = ends[j] - starts[i]
             if dur > hi:
                 break
             total += base[j]
@@ -184,10 +252,17 @@ def candidate_windows(cues: list[Cue], lo: float, hi: float, target_len: float) 
                 s *= 1.15
             if _ends_sentence(cues[j]) or j == n - 1 or cues[j + 1].speaker != cues[j].speaker:
                 s *= 1.15
+            w = Window(starts[i], ends[j], s, "", tuple(range(i, j + 1)))
+            if shortest is None:
+                shortest = w
             if best is None or s > best.score:
-                best = Window(cues[i].start, cues[j].end, s, "", tuple(range(i, j + 1)))
+                best = w
         if best is not None:
             out.append(best)
+            # The shortest valid window from the same start gives the picker a way to
+            # fit a tiny target once snapping has widened every window (pick_moments).
+            if shortest is not None and shortest.cue_indexes != best.cue_indexes:
+                out.append(shortest)
     return out
 
 
@@ -224,20 +299,23 @@ def _duplicate(w: Window, picked: list[Window], cues: list[Cue], sentences_seen:
 
 
 def _runtime_w(ws: list[Window]) -> float:
-    return INTRO_SECONDS + sum(CARD_SECONDS + (w.end - w.start) for w in ws)
+    return INTRO_SECONDS + BOOKENDS_SECONDS + sum(CARD_SECONDS + PAD_SECONDS + (w.end - w.start) for w in ws)
 
 
-def pick_moments(cues: list[Cue], minutes: float, preset: str = "internal") -> list[Moment]:
+def pick_moments(
+    cues: list[Cue], minutes: float, preset: str = "internal", *, spans: list[Span] | None = None
+) -> list[Moment]:
     """Heuristic v2 (module docstring). Chronological result, +-20 % of `minutes` when possible."""
     if not cues:
         return []
+    spans = spans if spans is not None else spans_for(cues)
     low, target, high = target_band(minutes)
     k = max(MIN_MOMENTS, round(target / SECONDS_PER_MOMENT))
-    budget = max(target - INTRO_SECONDS - CARD_SECONDS * k, 0.0)
+    budget = max(target - INTRO_SECONDS - BOOKENDS_SECONDS - (CARD_SECONDS + PAD_SECONDS) * k, 0.0)
     hi = min(MAX_WINDOW, float(PRESET_BOUNDS.get(preset, (15, 120))[1]))
     lo = min(MIN_WINDOW, max(8.0, budget / k))  # tiny targets (demo: 0.5 min) cannot fit K x 15 s
     target_len = min(hi, max(lo, budget / k))
-    cands = candidate_windows(cues, lo, hi, target_len)
+    cands = candidate_windows(cues, lo, hi, target_len, spans)
     if not cands:
         return []
     t0 = min(c.start for c in cues)
@@ -256,29 +334,57 @@ def pick_moments(cues: list[Cue], minutes: float, preset: str = "internal") -> l
             kept.append(w)
     picked = kept
     ranked = sorted(cands, key=lambda w: w.score, reverse=True)
-    while _runtime_w(picked) < low:
-        room = high - _runtime_w(picked)
-        extra: Window | None = None
-        fallback: Window | None = None
-        for w in ranked:
-            if _overlaps(w, picked) or _duplicate(w, picked, cues, seen):
-                continue
-            if CARD_SECONDS + w.end - w.start <= room:
-                extra = w
+
+    def fill() -> None:
+        while _runtime_w(picked) < low:
+            room = high - _runtime_w(picked)
+            extra: Window | None = None
+            fallback: Window | None = None
+            for w in ranked:
+                if _overlaps(w, picked) or _duplicate(w, picked, cues, seen):
+                    continue
+                if CARD_SECONDS + w.end - w.start <= room:
+                    extra = w
+                    break
+                if fallback is None:
+                    fallback = w
+            extra = extra or fallback
+            if extra is None:
                 break
-            if fallback is None:
-                fallback = w
-        extra = extra or fallback
-        if extra is None:
-            break
-        picked.append(extra)
+            picked.append(extra)
+
+    fill()
     while _runtime_w(picked) > high and len(picked) > MIN_MOMENTS:
         picked.remove(min(picked, key=lambda w: w.score))
+    # Tiny targets (the 72 s demo at 0.5 min): sentence snapping widens every window, so
+    # even MIN_MOMENTS picks can overshoot the band. Swap the longest pick for the
+    # shortest window from the same start cue, then fill the freed room again.
+    shortest: dict[int, Window] = {}
+    for w in cands:
+        if w.cue_indexes[0] not in shortest or w.duration < shortest[w.cue_indexes[0]].duration:
+            shortest[w.cue_indexes[0]] = w
+    while _runtime_w(picked) > high:
+        swappable = [w for w in picked if shortest[w.cue_indexes[0]].duration < w.duration]
+        if not swappable:
+            break
+        w = max(swappable, key=lambda w: w.duration)
+        picked[picked.index(w)] = shortest[w.cue_indexes[0]]
+        fill()
+    if len(picked) < MIN_MOMENTS:  # a reel has at least two moments, band or no band
+        for w in sorted(ranked, key=lambda w: (round(w.duration), -w.score)):
+            if len(picked) >= MIN_MOMENTS:
+                break
+            if not _overlaps(w, picked) and not _duplicate(w, picked, cues, seen):
+                picked.append(w)
     picked.sort(key=lambda w: w.start)
-    return [
-        moment_from_cues(w.start, w.end, [cues[i] for i in w.cue_indexes], score=w.score, cue_indexes=w.cue_indexes)
+    moments = [
+        moment_from_cues(
+            w.start, w.end, [cues[i] for i in w.cue_indexes], score=w.score, cue_indexes=w.cue_indexes,
+            requested=(cues[w.cue_indexes[0]].start, cues[w.cue_indexes[-1]].end),
+        )
         for w in picked
     ]
+    return resolve_overlaps(moments)[0]
 
 
 def best_sentence(cues: list[Cue]) -> str:
@@ -299,6 +405,8 @@ def classify(cues: list[Cue]) -> str | None:
         return "Decision"
     if _DEMO.search(text):
         return "Demo"
+    if teachable(text) >= 1.5:
+        return "Lesson"
     return None
 
 
@@ -321,37 +429,47 @@ def moment_from_cues(
     lines: tuple[str, ...] = (),
     score: float = 0.0,
     cue_indexes: tuple[int, ...] = (),
+    lesson: str | None = None,
+    context: str | None = None,
+    requested: tuple[float, float] | None = None,
 ) -> Moment:
-    takeaway = clip_text(tidy_sentence(takeaway or title or best_sentence(cues) or f"Moment at {_ts(start)}"), TAKEAWAY_LIMIT)
+    lesson = clip_text(tidy_sentence(lesson), LESSON_LIMIT) if lesson else ""
+    context = clip_text(tidy_sentence(context), CONTEXT_LIMIT) if context else ""
+    takeaway = clip_text(
+        tidy_sentence(takeaway or lesson or title or best_sentence(cues) or f"Moment at {_ts(start)}"), TAKEAWAY_LIMIT
+    )
     if not takeaway.endswith((".", "!", "?", "…")):
         takeaway += "."
-    title = clip_text(tidy_sentence(title) if title else takeaway, TITLE_LIMIT)
+    title = clip_text(tidy_sentence(title) if title else (lesson or takeaway), TITLE_LIMIT)
     speaker = dominant_speaker(cues)
     if why is None:
         why = " · ".join(x for x in (classify(cues), speaker) if x) or "Key moment"
     return Moment(
-        start, end, takeaway, title, clip_text(why, LINE_LIMIT), tuple(lines), score, speaker, tuple(cue_indexes)
+        start, end, takeaway, title, clip_text(why, LINE_LIMIT), tuple(lines), score, speaker, tuple(cue_indexes),
+        lesson, context, (), requested,
     )
 
 
-def moments_from_specs(specs: list[dict], cues: list[Cue]) -> list[Moment]:
-    """Snap human/LLM records to cue boundaries; keep the given order.
+def moments_from_specs(specs: list[dict], cues: list[Cue], *, spans: list[Span] | None = None) -> list[Moment]:
+    """Snap human/LLM records to sentence boundaries; keep the given order.
 
-    start moves back to the start of the first cue it touches, end forward to
-    the end of the last one, so the clip never opens or closes mid-caption.
-    A span with no cues at all (silence, or no transcript there) is kept as is.
+    start moves back to the start of the sentence it falls in, end forward to
+    the end of the sentence it falls in (cuts.snap_outward), so the clip never
+    opens or closes mid-sentence. A time in a gap between sentences stays put.
+    `lesson`/`context` (<= 80 / <= 120) frame the moment for a viewer who was
+    not there; `title`/`lines`/`why` keep working as before.
     """
+    spans = spans if spans is not None else spans_for(cues)
     out: list[Moment] = []
     for k, spec in enumerate(specs, 1):
         try:
-            start, end = parse_clock(spec["start"]), parse_clock(spec["end"])
+            asked_start, asked_end = parse_clock(spec["start"]), parse_clock(spec["end"])
         except (KeyError, ValueError, TypeError) as e:
             raise ValueError(f"moment {k}: needs start and end (seconds or h:mm:ss): {e}") from e
-        if end <= start:
+        if asked_end <= asked_start:
             raise ValueError(f"moment {k}: end must be after start")
+        start, end = snap_outward(asked_start, asked_end, spans)
         idx = tuple(i for i, c in enumerate(cues) if c.end > start and c.start < end)
-        if idx:
-            start, end = min(cues[i].start for i in idx), max(cues[i].end for i in idx)
         lines = spec.get("lines") or ()
         if isinstance(lines, str):
             lines = (lines,)
@@ -364,9 +482,47 @@ def moments_from_specs(specs: list[dict], cues: list[Cue]) -> list[Moment]:
                 lines=tuple(str(ln) for ln in lines)[:4],
                 score=float(spec.get("score") or 0.0),
                 cue_indexes=idx,
+                lesson=str(spec.get("lesson") or "") or None,
+                context=str(spec.get("context") or "") or None,
+                requested=(asked_start, asked_end),
             )
         )
     return out
+
+
+def resolve_overlaps(moments: list[Moment], duration: float | None = None) -> tuple[list[Moment], list[str]]:
+    """Snapping two adjacent moments can make them share a sentence. The later
+    one then starts where the earlier one ends (still a sentence boundary), or is
+    dropped when nothing of it is left. With `duration`, a moment past the end of
+    the source is dropped and one running over it is clamped (a moments file
+    written for the full recording, run against a 10-minute excerpt). Order is
+    preserved; notes explain."""
+    order = sorted(range(len(moments)), key=lambda i: moments[i].start)
+    fixed: dict[int, Moment | None] = {i: m for i, m in enumerate(moments)}
+    notes: list[str] = []
+    prev: Moment | None = None
+    for i in order:
+        m = fixed[i]
+        assert m is not None
+        if duration is not None:
+            if m.start >= duration - MIN_MOMENT_AFTER_OVERLAP:
+                notes.append(f"moment {i + 1} ({_ts(m.start)}-{_ts(m.end)}) starts after the source ends ({_ts(duration)}); dropped")
+                fixed[i] = None
+                continue
+            if m.end > duration:
+                notes.append(f"moment {i + 1} ran past the end of the source; now ends at {_ts(duration)}")
+                m = replace(m, end=duration)
+                fixed[i] = m
+        if prev is not None and m.start < prev.end:
+            if m.end - prev.end < MIN_MOMENT_AFTER_OVERLAP:
+                notes.append(f"moment {i + 1} ({_ts(m.start)}-{_ts(m.end)}) lies inside its neighbour after snapping; dropped")
+                fixed[i] = None
+                continue
+            notes.append(f"moment {i + 1} overlapped its neighbour after snapping; now starts at {_ts(prev.end)}")
+            m = replace(m, start=prev.end)
+            fixed[i] = m
+        prev = m
+    return [fixed[i] for i in range(len(moments)) if fixed[i] is not None], notes
 
 
 def fit_moments(candidates: list[Moment], minutes: float) -> list[Moment]:
@@ -386,6 +542,75 @@ def fit_moments(candidates: list[Moment], minutes: float) -> list[Moment]:
     return picked
 
 
+def segments_for(
+    m: Moment, *, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS, duration: float | None = None
+) -> tuple[tuple[float, float], ...]:
+    """What goes in the plan: the keep-list from cut_moments, or the whole moment
+    with lead/tail air."""
+    return m.segments or (pad(m.start, m.end, lead, tail, duration),)
+
+
+def cut_moments(
+    moments: list[Moment],
+    words: list[Word],
+    silences: list[list[tuple[float, float]]],
+    *,
+    lead: float = LEAD_SECONDS,
+    tail: float = TAIL_SECONDS,
+    duration: float | None = None,
+    fillers: bool = True,
+    max_silence: float = MAX_SILENCE,
+) -> tuple[list[Moment], list[CutReport]]:
+    """Filler + silence removal for every moment (cuts.tighten); `silences[i]`
+    belongs to `moments[i]`. Returns the moments with `segments` filled in and
+    one report each."""
+    out: list[Moment] = []
+    reports: list[CutReport] = []
+    for m, sil in zip(moments, silences):
+        s, e = pad(m.start, m.end, lead, tail, duration)
+        rep = tighten(s, e, words, sil, fillers=fillers, max_silence=max_silence)
+        out.append(replace(m, segments=rep.segments))
+        reports.append(rep)
+    return out, reports
+
+
+def lesson_lines(moments: list[Moment]) -> list[str]:
+    """One line per chapter for the opening card: the lesson, else the title."""
+    return [m.lesson or m.title for m in moments]
+
+
+def takeaway_lines(
+    moments: list[Moment], cues: list[Cue], *, given: list[str] | None = None, hand_picked: bool = False
+) -> list[str]:
+    """Closing-card lines, best source first: `--takeaways` lines > the moments'
+    `lesson` fields > (hand-picked or model moments) their titles > the
+    extractive executive summary."""
+    if given:
+        lines = [ln.strip() for ln in given if ln.strip()]
+        if lines:
+            return lines
+    lessons = [m.lesson for m in moments if m.lesson]
+    if lessons:
+        return lessons
+    if hand_picked:
+        return [m.title for m in moments]
+    return [tidy_sentence(s.text) for s in executive_summary(cues, n=4)]
+
+
+def plan_runtime(plan: dict) -> float:
+    """Seconds on screen: intro + opening + (card + kept) per clip + closing + outro."""
+    reel = plan.get("output", {}).get("reel") or {}
+    total = 0.0
+    for card in (reel.get("intro"), reel.get("outro"), *reel.get("opening", []), *reel.get("closing", [])):
+        if card:
+            total += float(card.get("seconds", CARD_SECONDS))
+    for clip in plan["clips"]:
+        if clip.get("card"):
+            total += float(clip["card"].get("seconds", CARD_SECONDS))
+        total += sum(s["end"] - s["start"] for s in clip["segments"])
+    return total
+
+
 def build_reel_plan(
     source,
     moments: list[Moment],
@@ -397,23 +622,44 @@ def build_reel_plan(
     captions_kind: str = "embedded",
     srt_path: str | None = None,
     summary_path: str | None = None,
+    lead: float = LEAD_SECONDS,
+    tail: float = TAIL_SECONDS,
+    takeaways: list[str] | None = None,
+    transition: str = "dip",
+    music: str | None = None,
 ) -> dict:
-    """A v1 plan plus output.reel and one card per clip (contract v1.1)."""
+    """A v1 plan plus output.reel (contract v1.2): intro, "What you'll learn",
+    one card per clip, "Takeaways" cards, a sign-off outro, `dip` transitions
+    and clip audio fades. `music` is a repo-root-relative or absolute path the
+    caller has the rights to (contract/README.md, v1.2)."""
+    duration = float(getattr(source, "duration_seconds", 0.0) or 0.0) or None
     windows = [Window(m.start, m.end, m.score, m.takeaway, m.cue_indexes) for m in moments]
     plan = build_plan(
         source, windows, out_dir, preset=preset, captions_kind=captions_kind,
         srt_path=srt_path, summary_path=summary_path,
     )
     for clip, m in zip(plan["clips"], moments):
+        clip["segments"] = [
+            {"start": round(a, 3), "end": round(b, 3)} for a, b in segments_for(m, lead=lead, tail=tail, duration=duration)
+        ]
         clip["card"] = m.card()
-    total = runtime(moments)
-    plan["output"]["reel"] = {
+    reel: dict = {
         "filename": "reel.mp4",
-        "intro": {
-            "title": clip_text(title, TITLE_LIMIT) or "Summary",
-            "lines": [f"Recorded {date}", f"{len(moments)} moments · {_ts(total)}"],
-            "seconds": INTRO_SECONDS,
-        },
+        "intro": {"title": clip_text(title, TITLE_LIMIT) or "Summary", "lines": [], "seconds": INTRO_SECONDS},
         "chapter_cards": "all",
+        "outro": outro_card(),
+        "transition": {"kind": transition, "seconds": TRANSITION_SECONDS},
+        "audio_fade_seconds": AUDIO_FADE_SECONDS,
     }
+    opening = opening_card(lesson_lines(moments), title_hint=title)
+    if opening:
+        reel["opening"] = [opening]
+    closing = closing_cards(takeaways or [])
+    if closing:
+        reel["closing"] = closing
+    if music:
+        reel["music"] = {"path": music}
+    plan["output"]["reel"] = reel
+    total = plan_runtime(plan)
+    reel["intro"]["lines"] = [f"Recorded {date}", f"{len(moments)} moments · {_ts(total)}"]
     return plan

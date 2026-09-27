@@ -15,6 +15,21 @@ def test_chunk_text_never_splits_a_block():
         assert len(c) <= 250 and all(b in blocks for b in c.split("\n\n"))
 
 
+def test_prompt_and_schema_ask_for_lessons_for_a_founder_who_missed_it():
+    text = llm.prompt("[0:00:00] K: hello.", 4, 3, 1, 2)
+    assert "founder who missed the session" in text and "lesson" in text and "context" in text
+    assert "part 1 of 2" in text and "up to 3" in text
+    props = llm.SCHEMA["properties"]["moments"]["items"]
+    assert {"lesson", "context"} <= set(props["properties"]) and {"lesson", "context"} <= set(props["required"])
+
+
+def test_validate_specs_keeps_lesson_and_context_when_given():
+    out = llm.validate_specs([{"start": 10, "end": 40, "title": "t", "why": "w", "score": 7, "lesson": "L" * 100, "context": "C" * 200},
+                              {"start": 50, "end": 80, "title": "t", "why": "w", "score": 7, "lesson": "", "context": None}], 1000)
+    assert len(out[0]["lesson"]) == 80 and len(out[0]["context"]) == 120
+    assert "lesson" not in out[1] and "context" not in out[1]  # absent stays absent: v1.1 records unchanged
+
+
 def test_validate_specs_drops_nonsense():
     specs = [
         {"start": 10, "end": 40, "title": "ok", "why": "Decision", "score": 8},
