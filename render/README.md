@@ -81,7 +81,7 @@ after a failed media job; schema/semantic validation errors create no output.
 | `output.preset` | Defaults to `internal`; `shorts` defaults to 9:16, the others to 16:9. Warn using the contract's 15–120/90/60/60-second bounds, without rejecting. |
 | `output.aspect`, `crop_focus` | 16:9 preserves the source frame, as the schema specifies. 9:16/1:1 crop left/center/right. `speaker` explicitly warns and falls back to center. |
 | `output.max_height` | 1080 default, 720 override. Never enlarge either source dimension; normalize display aspect/rotation and round dimensions down to even codec dimensions. |
-| `source.captions`, `output.captions` | Read the single embedded text subtitle track or a UTF-8 SRT, intersect/retime cues through the exact cuts, then burn into pixels or write `<id>.srt`. `none` disables captions; omitted source captions mean none. Missing/unsupported requested subtitles fail explicitly. |
+| `source.captions`, `output.captions` | Read the single embedded text subtitle track or a UTF-8 SRT, intersect/retime cues through the exact cuts, then burn into pixels or write `<id>.srt`. A cue that a cut passes through keeps only the words spoken in its kept part and is dropped when a quarter or less of it survives (see [Caption text at cut edges](#caption-text-at-cut-edges)); cues wholly inside a segment keep their text unchanged. `none` disables captions; omitted source captions mean none. Missing/unsupported requested subtitles fail explicitly. |
 | `trim_silence` | Both values retain exact selected ranges. `true` permits tightening but does not require it; this renderer deliberately shaves zero seconds because amplitude alone cannot prove absence of speech. |
 | `takeaway`, `hook_offset_seconds` | Store the takeaway as MP4 title and informational hook offset as MP4 comment. No title-card effect or segment reordering is implied. |
 | `summary.path` | Copy the existing companion document by basename, byte for byte; preserve it if already at its destination. No PDF conversion or summary generation. |
@@ -385,6 +385,30 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   long titles now on three rows. `contract/examples/reel-with-music.json` re-rendered:
   49.07 s (7.0.2), 1920 × 1080 at 24 fps, AAC 48 kHz stereo, unchanged.
 
+### Changes on 2026-09-26 (Kyle's agent): caption text at cut edges — for Ramsey's review
+
+- **Why**: the independent check of the Talk #2 reel found the first burned caption showing
+  words that had been cut. The clip opened on "Normally what you would do", but the caption read
+  "I don't know. I don't know. I so, okay, normally what you would do": `retime` split cues by
+  time and kept the whole text, and Meet/Zoom cues run about four seconds, so every clip that
+  starts or ends inside a cue showed up to four seconds of speech the viewer never hears.
+- **What** (`cliprender/captions.py`, see [Caption text at cut edges](#caption-text-at-cut-edges)):
+  a cue that a segment edge passes through keeps only the words spoken in its kept part,
+  trimmed at word boundaries from the cut side; a cue that keeps a quarter or less of its
+  duration, or no whole word, is dropped. Cues wholly inside a segment keep their text byte
+  for byte, so sidecar SRT output is unchanged wherever no cut passes through a cue. Speaker
+  tags and cut markers follow the speech they belong to, so a trimmed sidecar cue still names
+  its speaker; the burn-in path strips them as before.
+- **Tests** (`tests/test_captions.py`; renderer suite 128 → 140 passed on FFmpeg 7.0.2): the
+  8-word, 4 s cue cut at 2 s keeps the last four words, cut at 3 s the first six, cut at 1 s is
+  dropped, wholly inside is unchanged; both edges trimmed; the threshold from both sides; a
+  one-word cue; a Zoom multi-speaker cue keeping only the surviving speaker's tag and marker;
+  the demo clip's opening cue and the Talk #2 finding. Three existing edge-cut assertions were
+  updated to the trimmed text.
+- **Acceptance**: `contract/examples/one-clip-trim.json` (clip starts 2 s into the 4 s cue
+  "Okay, this is a") renders 28.000 s as before; the frame at 0.5 s now burns "is a" instead of
+  "Okay, this is a", and the frame at 2.5 s shows the untouched second cue.
+
 ## Card text fit
 
 A card is on screen for a few seconds and cannot be scrolled, so text that is cut reads as
@@ -407,3 +431,31 @@ a broken sentence. `cliprender.cards.layout` therefore fits the text before draw
 The layout is proportional to the frame (margins to the width, fonts to the short edge), so
 what fits at 1080p fits at every resolution of the same aspect. On 16:9 every card of the
 first real reel keeps the base size; the narrow aspects shrink long titles to 88 or 76 %.
+
+## Caption text at cut edges
+
+Embedded meeting captions (Google Meet, Zoom) arrive as cues of about four seconds with no
+timing inside the cue, while the bot cuts clips at word boundaries anywhere in the speech. A
+cut therefore usually lands inside a cue, and a caption that keeps the whole cue's text shows
+the viewer words that were cut out, most visibly on the first frames of a clip.
+`cliprender.captions.retime` handles a cue that a segment edge passes through like this:
+
+1. **Drop, if little is left.** The cue must keep strictly more than `MIN_KEPT_FRACTION`
+   (a quarter) of its duration; a shorter remainder is dropped rather than shown as a
+   fragment. A cue the segment only touches at a boundary was already excluded.
+2. **Trim by time, at word boundaries.** Without per-word timing the words are taken to be
+   evenly spaced over the cue: word `i` of `n` is kept when its centre `(i + 0.5) / n` falls
+   inside the kept fraction of the cue. That keeps one contiguous run of words, from the side
+   the cut did not touch, with the original spacing; a segment starting inside the cue drops
+   leading words, one ending inside it drops trailing words, one lying inside it both. A cue
+   whose words are all cut is dropped.
+3. **Annotation lines follow their speech.** A speaker tag `(Name)` or `()` stays with the
+   content line after it, a lone `-` with the line before it, so a trimmed sidecar cue still
+   names the speaker who is heard. `tidy_for_burn` strips those lines from burned captions as
+   before.
+
+A cue wholly inside a segment keeps its text byte for byte, so a sidecar SRT only changes for
+the cues a cut passes through. The trimmed cue keeps the intersected timing, so it is shown
+for exactly the kept part of the cue. The heuristic is proportional, not a transcript
+alignment: on the demo clip the 4 s cue "Okay, this is a" cut at 2 s burns "is a", which is
+close to what is heard and never shows words that are not.

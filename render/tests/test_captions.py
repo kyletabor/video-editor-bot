@@ -4,7 +4,9 @@ import math
 
 import pytest
 
-from cliprender.captions import Cue, format_srt, parse_srt, retime
+from cliprender.captions import Cue, format_srt, parse_srt, retime, tidy_for_burn
+
+EIGHT_WORDS = "one two three four five six seven eight"
 
 
 def test_parse_bom_crlf_multiline_and_nonsequential_indices():
@@ -113,10 +115,11 @@ def test_retime_intersects_excludes_boundaries_and_removed_cues():
         Cue(4, 6, "right cut"),
         Cue(5, 6, "after"),
     ]
+    # The half-kept edge cues keep only the word spoken in their kept half.
     assert retime(cues, [{"start": 2, "end": 5}]) == [
-        Cue(0, 1, "left cut"),
+        Cue(0, 1, "cut"),
         Cue(1, 2, "inside"),
-        Cue(2, 3, "right cut"),
+        Cue(2, 3, "right"),
     ]
 
 
@@ -127,10 +130,11 @@ def test_retime_reordered_and_repeated_segments_follow_array_order():
 
 
 def test_retime_spanning_cue_is_split_at_every_join():
-    cues = [Cue(1, 15, "spanning"), Cue(5, 9, "deleted")]
-    assert retime(cues, [{"start": 2, "end": 4}, {"start": 10, "end": 13}]) == [
-        Cue(0, 2, "spanning"),
-        Cue(2, 5, "spanning"),
+    # One cue cut into two fragments by a join hands each fragment the words of its own part.
+    cues = [Cue(0, 8, EIGHT_WORDS), Cue(3, 5, "deleted")]
+    assert retime(cues, [{"start": 0, "end": 3}, {"start": 5, "end": 8}]) == [
+        Cue(0, 3, "one two three"),
+        Cue(3, 6, "six seven eight"),
     ]
 
 
@@ -145,9 +149,9 @@ def test_retime_orders_overlapping_cues_by_timestamp_stably():
 
 def test_retime_fractional_bounds_remain_inside_joined_duration():
     output = retime(
-        [Cue(0, 20, "all")], [{"start": 1.25, "end": 2.375}, {"start": 8.5, "end": 9.125}]
+        [Cue(1, 3, "all of it")], [{"start": 1.25, "end": 2.375}, {"start": 2.375, "end": 4}]
     )
-    assert output == [Cue(0, 1.125, "all"), Cue(1.125, 1.75, "all")]
+    assert output == [Cue(0, 1.125, "all of"), Cue(1.125, 1.75, "it")]
 
 
 @pytest.mark.parametrize(
@@ -172,14 +176,95 @@ def test_retime_empty_inputs():
     assert retime([Cue(0, 1, "x")], []) == []
 
 
-def test_tidy_for_burn_drops_speaker_tags_and_cut_markers():
-    from cliprender.captions import Cue, tidy_for_burn
+# Cut-edge trimming: a cue the segment edge passes through keeps only the words that were
+# spoken in its kept part. Meet/Zoom cues run about four seconds, so without this a clip that
+# starts mid-cue opens on a caption full of words the viewer never hears.
 
+
+def test_retime_keeps_the_text_of_a_cue_wholly_inside_a_segment():
+    text = "(Kyle Tabor)\n  odd   spacing  \n\n-\nkept as is"
+    assert retime([Cue(1, 5, text)], [{"start": 1, "end": 5}]) == [Cue(0, 4, text)]
+    assert retime([Cue(1, 5, text)], [{"start": 0.5, "end": 6}]) == [Cue(0.5, 4.5, text)]
+
+
+def test_retime_drops_leading_words_when_a_segment_starts_inside_a_cue():
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 2, "end": 6}]) == [
+        Cue(0, 2, "five six seven eight")
+    ]
+
+
+def test_retime_drops_trailing_words_when_a_segment_ends_inside_a_cue():
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 0, "end": 3}]) == [
+        Cue(0, 3, "one two three four five six")
+    ]
+
+
+def test_retime_trims_both_edges_when_a_segment_lies_inside_a_cue():
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 1, "end": 3}]) == [
+        Cue(0, 2, "three four five six")
+    ]
+
+
+@pytest.mark.parametrize("kept", [1.0, 0.9, 0.001])
+def test_retime_drops_a_cue_that_keeps_a_quarter_or_less(kept):
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 0, "end": kept}]) == []
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 4 - kept, "end": 4}]) == []
+
+
+def test_retime_keeps_a_cue_just_above_the_drop_threshold():
+    assert retime([Cue(0, 4, EIGHT_WORDS)], [{"start": 0, "end": 1.2}]) == [Cue(0, 1.2, "one two")]
+
+
+def test_retime_drops_a_trimmed_cue_that_has_no_whole_word_left():
+    # A single word sits at the cue's centre: it survives a half cut but not a deeper one,
+    # even though 37.5 % of the cue is above the duration threshold.
+    assert retime([Cue(0, 4, "Yes.")], [{"start": 0, "end": 2}]) == [Cue(0, 2, "Yes.")]
+    assert retime([Cue(0, 4, "Yes.")], [{"start": 0, "end": 1.5}]) == []
+
+
+def test_retime_trimmed_cue_keeps_only_the_speaker_tags_and_markers_of_surviving_speech():
+    # Zoom's embedded captions (talk2 recording): "(Name)" introduces the speech after it and a
+    # lone "-" closes the speech before it; "()" is an anonymous speaker tag. Ten words.
+    text = (
+        "(Kyle Tabor)\ncan start. I just figured\n-\n(Ramsey Jamoul)\nOh, hi\n-\n()\nAnd Jim joined"
+    )
+    assert retime([Cue(0, 10, text)], [{"start": 6, "end": 10}]) == [
+        Cue(0, 4, "(Ramsey Jamoul)\nhi\n-\n()\nAnd Jim joined")
+    ]
+    assert retime([Cue(0, 10, text)], [{"start": 0, "end": 3}]) == [
+        Cue(0, 3, "(Kyle Tabor)\ncan start. I\n-")
+    ]
+    # A cue of annotations only has nothing to trim and stays as it is for the sidecar.
+    assert retime([Cue(0, 4, "-\n()")], [{"start": 2, "end": 4}]) == [Cue(0, 2, "-\n()")]
+
+
+def test_retime_demo_clip_opening_cue_shows_only_the_words_after_the_cut():
+    # assets/demo-clip.mp4 with contract/examples/one-clip-trim.json: the clip starts 2 s into
+    # the 4 s Meet cue "Okay, this is a", so the burned caption opens on "is a".
+    cue = Cue(0, 4, "(Kyle Tabor)\nOkay, this is a")
+    trimmed = retime([cue], [{"start": 2, "end": 30}])
+    assert trimmed == [Cue(0, 2, "(Kyle Tabor)\nis a")]
+    assert tidy_for_burn(trimmed) == [Cue(0, 2, "is a")]
+
+
+def test_retime_talk2_reel_opening_cue_no_longer_shows_the_cut_words():
+    # The finding that motivated trimming: the reel opened on "Normally what you would do" under
+    # a caption that still carried the two false starts before it.
+    text = "I don't know. I don't know. I so, okay, normally what you would do"
+    assert retime([Cue(0, 4, text)], [{"start": 2.5, "end": 8}]) == [
+        Cue(0, 1.5, "normally what you would do")
+    ]
+
+
+def test_tidy_for_burn_drops_speaker_tags_and_cut_markers():
     cues = [
         Cue(0.0, 4.0, "(Kyle Tabor)\nis you would just talk to an agent. -"),
         Cue(4.0, 8.0, "-\n()\n  "),
         Cue(8.0, 12.0, "(Ramsey Jamoul)\nI think it was obvious"),
     ]
     tidy = tidy_for_burn(cues)
-    assert [c.text for c in tidy] == ["is you would just talk to an agent. -", "I think it was obvious"]
+    assert [c.text for c in tidy] == [
+        "is you would just talk to an agent. -",
+        "I think it was obvious",
+    ]
     assert (tidy[0].start, tidy[0].end) == (0.0, 4.0)
