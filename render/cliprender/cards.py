@@ -292,41 +292,7 @@ def draw_card(card, size):
 
 
 def write_card_png(card, size, path):
+    """The card as a PNG; `cliprender.reel` turns it into a reel piece directly (the image
+    looped at the reel's frame rate over generated silence), so a card is encoded once."""
     draw_card(card, size).save(path, format="PNG")
     return path
-
-
-def encode_card_segment(tools, png, output, seconds, fps, audio):
-    """Turn a card PNG into an H.264 segment of exactly `seconds` at the reel's frame rate.
-
-    The image loops for the whole duration and, when the reel has audio, is paired with
-    generated silence at the reel's sample rate and channel layout so the reel's audio track
-    never has a hole. Output `-t` bounds both streams; it behaves identically on FFmpeg 4.4
-    and 7 whereas `-shortest` depends on interleaving.
-    """
-    duration = f"{float(seconds):.6f}"
-    args = ["-y", "-loop", "1", "-framerate", str(fps), "-i", png]
-    if audio:
-        layout = "stereo" if int(audio["channels"]) == 2 else "mono"
-        args += ["-f", "lavfi", "-i", f"anullsrc=r={int(audio['sample_rate'])}:cl={layout}"]
-    args += ["-map", "0:v:0"]
-    args += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"] if audio else ["-an"]
-    args += [
-        "-t",
-        duration,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        str(fps),
-        "-movflags",
-        "+faststart",
-        output,
-    ]
-    tools.encode(args)
-    return output

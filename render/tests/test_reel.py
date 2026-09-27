@@ -193,39 +193,32 @@ def test_reel_named_after_a_clip_is_rejected_before_tools_start(tmp_path):
 
 
 @needs_tools
-def test_card_segment_matches_the_reel_format(tmp_path, timing_flags):
-    from cliprender.cards import Card, encode_card_segment, write_card_png
+def test_card_piece_matches_the_reel_format(tmp_path, timing_flags):
+    from cliprender.cards import Card, write_card_png
     from cliprender.media import Tools
+    from cliprender.reel import encode_piece, piece_graph, wav_layout
 
     tools = Tools(timeout=90)
     card = Card("Segment", ("one line",), Fraction(3), "1 of 1 · 0:00:00")
     png = write_card_png(card, (320, 180), tmp_path / "card.png")
-    segment = encode_card_segment(
-        tools,
-        png,
-        tmp_path / "card.mp4",
-        card.seconds,
-        "10/1",
-        {"sample_rate": 48000, "channels": 2},
-    )
-    info = probe(segment)
-    video, sound = info["streams"]
-    assert (video["codec_type"], video["codec_name"], video["width"], video["height"]) == (
-        "video",
-        "h264",
-        320,
-        180,
-    )
-    assert (sound["codec_type"], sound["codec_name"], sound["sample_rate"], sound["channels"]) == (
-        "audio",
-        "aac",
-        "48000",
-        2,
-    )
-    for value in (info["format"]["duration"], video["duration"], sound["duration"]):
-        assert float(value) == pytest.approx(3, abs=0.05)
-    assert float(sound.get("start_time", 0)) == pytest.approx(0, abs=0.001)
-    assert len(luma_planes(segment, timing_flags)) == 30
-    ffmpeg("-xerror", "-i", segment, "-map", "0:v", "-map", "0:a", "-f", "null", "-")
-    silent = encode_card_segment(tools, png, tmp_path / "silent.mp4", card.seconds, "10/1", None)
-    assert [s["codec_type"] for s in probe(silent)["streams"]] == ["video"]
+    sound = {"sample_rate": 48000, "channels": 2}
+    fps, flags, graph_flag = Fraction(10), tools.cfr_flags(), tools.graph_flag()
+    inputs = ["-loop", "1", "-framerate", "10/1", "-i", png.name]
+    inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    graph = piece_graph(0, 1, (320, 180), fps, sound, 30, 144000, card=True)
+    ends = ((0, 0), (0, 0))
+    encode_piece(tools, tmp_path, "piece-00", inputs, graph, fps, flags, graph_flag, sound, ends)
+    piece = tmp_path / "piece-00.mp4"
+    (video,) = probe(piece)["streams"]
+    assert (video["codec_name"], video["width"], video["height"]) == ("h264", 320, 180)
+    # The tags every piece shares, so that the joined stream has one parameter set.
+    assert (video["color_range"], video["color_space"]) == ("tv", "bt709")
+    assert float(video["duration"]) == pytest.approx(3, abs=0.001)
+    assert len(luma_planes(piece, timing_flags)) == 30
+    # Exactly the samples the frames last; the WAV is joined, not decoded from AAC.
+    assert wav_layout(tmp_path / "piece-00.wav")[3] == 144000
+    ffmpeg("-xerror", "-i", piece, "-map", "0:v", "-f", "null", "-")
+    graph = piece_graph(0, 0, (320, 180), fps, None, 30, 0, card=True)
+    encode_piece(tools, tmp_path, "silent", inputs[:6], graph, fps, flags, graph_flag, None, ends)
+    assert [s["codec_type"] for s in probe(tmp_path / "silent.mp4")["streams"]] == ["video"]
+    assert not (tmp_path / "silent.wav").exists()
