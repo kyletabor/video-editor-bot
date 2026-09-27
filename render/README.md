@@ -372,7 +372,8 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   the lines have fallen two steps behind it. The footer band is reserved on every card. The
   ellipsis remains only as a last resort for text outside the contract or frames narrower
   than 1:1. A card that fitted before is drawn at the same size and position as before.
-- **Tests** (`tests/test_cards.py`, 114 → 128 in the renderer suite): the three truncated
+- **Tests** (`tests/test_cards.py`; renderer suite 114 → 128 passed on FFmpeg 7.0.2, 109 → 123
+  on 4.4.2 with the same five pre-existing multi-segment failures): the three truncated
   titles with their real lines fit in three rows at full size on 1920 × 1080; an 80-character
   title of long words fits without an ellipsis, every word whole, on all three aspects
   (shrinking on 9:16 and 1:1); four 120-character long-word lines stay whole, three rows each
