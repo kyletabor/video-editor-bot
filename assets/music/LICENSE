@@ -1,0 +1,191 @@
+assets/music/ — provenance and licence notes
+=============================================
+
+Both files in this directory are excerpts of 1924 sound recordings by Bennie
+Moten's Kansas City Orchestra that are in the PUBLIC DOMAIN IN THE UNITED STATES.
+This file records where each excerpt came from, why it is public domain, what
+was done to it and what could not be verified. It is a provenance record, not a
+licence grant: nobody in this project owns these recordings, so nobody here can
+license them; the files may be used because the US copyrights have expired.
+
+Public-domain reasoning (United States)
+---------------------------------------
+
+Two layers of rights exist in a record like this, and both have expired in the
+US:
+
+1. The SOUND RECORDING. Pre-1972 US sound recordings are governed by
+   17 U.S.C. § 1401 (the Classics Protection and Access Act, Title II of the
+   Music Modernization Act, 2018). Under § 1401(a)(2), a recording first
+   published between 1923 and 1946 is protected for 100 years after
+   publication, with the term running to the end of the calendar year. A
+   recording published in 1924 therefore entered the public domain on
+   1 January 2025; one published in 1925 on 1 January 2026. Both sides below
+   were recorded on 29 November 1924 and issued by OKeh in its 8000 "race"
+   series no later than 1925 (OKeh 8184 and 8194 sit below OKeh 8242, which
+   carries a May 1925 recording, and far below OKeh 8261, the first Louis
+   Armstrong Hot Five disc, from a November 1925 session). Whether the discs
+   shipped in late 1924 or early 1925 does not change the answer: either way
+   the term ended by 31 December 2025. Recordings first published in 1926 or
+   later are NOT yet public domain (1926 publications become free on
+   1 January 2027), which is why the orchestra's later Victor sides were
+   excluded.
+
+2. The MUSICAL COMPOSITION. "South" and "Goofy Dust" were composed by Bennie
+   Moten and Thamon Hayes and published in 1924. A work published in the US in
+   1924 could receive at most 95 years of protection (Copyright Act of 1976 as
+   extended in 1998), i.e. through 31 December 2019. The compositions have been
+   public domain in the US since 1 January 2020.
+
+This is a statement about US law only. Elsewhere the composition may still be
+protected: in life-plus-70-years countries (the EU, the UK, Canada since 2023
+and others) the co-composer Thamon Hayes (1898-1980) keeps "South" and "Goofy
+Dust" in copyright until the end of 2050, even though the 1924 recordings
+themselves are long out of term there. The project's reels are made and
+published from Kansas City, Missouri; if a reel is ever released through a
+publisher or platform that applies non-US rules, revisit this.
+
+The archive.org uploader additionally marked both source items CC0 1.0
+(https://creativecommons.org/publicdomain/zero/1.0/), which waives whatever
+rights, if any, exist in the transfer/digitisation itself. Nothing here is
+attribution-licensed (CC-BY) material.
+
+Files
+-----
+
+bed.mp3
+  Title ............ South (fox trot)
+  Performer ........ Bennie Moten's Kansas City Orchestra (Bennie Moten, piano
+                     and leader; personnel per the uploader's notes: Lammar
+                     Wright, Harry Cooper, cornets; Thamon Hayes, trombone;
+                     Harlan Leonard, clarinet/alto; Woody Walder, clarinet/tenor;
+                     Sam Tall, banjo; Willie Hall, drums)
+  Composers ........ Bennie Moten (1894-1935), Thamon Hayes (1898-1980)
+  Recorded ......... 29 November 1924, St. Louis, Missouri, for OKeh
+  Matrix / issue ... OKeh matrix 8769-B, issued as OKeh 8194-B (the flip side,
+                     OKeh 8194-A, is "Vine Street Blues", matrix 8770)
+  Source item ...... https://archive.org/details/JV-1108-1924-QmPoDocofNxLKMqxtXF8bavcaD5nBWViN6gKV67WKF7nGY.mp3
+  Download URL ..... https://archive.org/download/JV-1108-1924-QmPoDocofNxLKMqxtXF8bavcaD5nBWViN6gKV67WKF7nGY.mp3/JV-1108-1924-QmPoDocofNxLKMqxtXF8bavcaD5nBWViN6gKV67WKF7nGY.mp3
+  Source file ...... 6,675,980 bytes, MP3 320 kbps, 44.1 kHz, 2 channels
+                     (dual mono), 166.9 s,
+                     sha256 b851d1479f8e201aa32c05c1959538f430c7e76e649c86693dfbc15aba312250
+  Fetched .......... 26 September 2026
+  Excerpt .......... 6.23 s to 95.66 s of the transfer (89.4 s). The record is a
+                     4-bar intro followed by seven 16-bar strains (bar = 1.39 s
+                     at ~172 BPM); the excerpt is the first four strains,
+                     A1-A2-B1-B2, starting on the downbeat after the intro's
+                     stop-time break and ending where the fifth strain begins,
+                     so a loop restarts on a phrase boundary.
+  Result ........... 89.47 s, 1,432,051 bytes, 44.1 kHz stereo, MP3 128 kbps
+                     CBR, integrated loudness -16.5 LUFS (ffmpeg ebur128,
+                     including the fades; loudnorm reported -16.0 before them),
+                     true peak -6.8 dBFS, loudness range 1.8 LU,
+                     sha256 6d276e3e0406e18e242c45f5c8a3c05a8e2f081e71137d8217541ea7603608f2
+
+bed-alt.mp3
+  Title ............ Goofy Dust (fox trot)
+  Performer ........ Bennie Moten's Kansas City Orchestra, same session as
+                     above (the uploader's notes list a smaller group for this
+                     side: Lammar Wright, cornet; Thamon Hayes, trombone; Woody
+                     Walder, clarinet/tenor; Bennie Moten, piano; Sam Tall,
+                     banjo; Willie Hall, drums)
+  Composers ........ Bennie Moten, Thamon Hayes
+  Recorded ......... 29 November 1924, St. Louis, Missouri, for OKeh
+  Matrix / issue ... OKeh matrix 8772-A, issued as OKeh 8184-B (the flip side,
+                     OKeh 8184-A, is "Tulsa Blues", matrix 8771)
+  Source item ...... https://archive.org/details/JV-1350-1924-QmdnKj4kVT5nSLfkQZDCcHTzFYFNGKKXboExCzW9LstLVt.mp3
+  Download URL ..... https://archive.org/download/JV-1350-1924-QmdnKj4kVT5nSLfkQZDCcHTzFYFNGKKXboExCzW9LstLVt.mp3/JV-1350-1924-QmdnKj4kVT5nSLfkQZDCcHTzFYFNGKKXboExCzW9LstLVt.mp3
+  Source file ...... 7,121,252 bytes, MP3 320 kbps, 44.1 kHz, 2 channels
+                     (dual mono), 178.2 s, ~9 s of lead-in silence,
+                     sha256 26521aafaedb72c27d560ec38bd824a8b0688cb31113aab911ad1925925f5095
+  Fetched .......... 26 September 2026
+  Excerpt .......... 36.78 s to 107.84 s of the transfer (71.1 s): eight
+                     consecutive 16-bar rag strains (bar = 0.56 s at ~215 BPM)
+                     from the steady middle of the record, cut on the strain
+                     grid; a stop-time break falls just before the end point,
+                     which marks it as a phrase boundary.
+  Result ........... 71.11 s, 1,138,225 bytes, 44.1 kHz stereo, MP3 128 kbps
+                     CBR, integrated loudness -16.4 LUFS (including fades;
+                     loudnorm reported -15.9 before them), true peak -6.8 dBFS,
+                     loudness range 1.6 LU,
+                     sha256 93f85514a181d29c89b817018c7c82230a88582e2f563df017ab629c8cd8b940
+
+Processing applied (identical for both)
+---------------------------------------
+
+FFmpeg 4.4.2 (Ubuntu 22.04 build, aarch64), two passes, argument lists only:
+
+  pass 1 (measure)
+    ffmpeg -nostdin -y -ss START -t LENGTH -i SOURCE.mp3 -vn
+      -af "highpass=f=60:poles=2,lowpass=f=8000:poles=2,
+           loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json"
+      -f null -
+  pass 2 (render, feeding back the measured values so loudnorm runs linear)
+    ffmpeg -nostdin -y -ss START -t LENGTH -i SOURCE.mp3 -vn
+      -af "highpass=f=60:poles=2,lowpass=f=8000:poles=2,
+           loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=..:measured_TP=..
+                    :measured_LRA=..:measured_thresh=..:offset=..:linear=true,
+           afade=t=in:st=0:d=1,afade=t=out:st=LENGTH-1:d=1,
+           aformat=sample_rates=44100:channel_layouts=stereo"
+      -c:a libmp3lame -b:a 128k -ar 44100 -ac 2 -map_metadata -1
+      -id3v2_version 3 -metadata title=... -metadata comment=... OUT.mp3
+
+  START/LENGTH: bed.mp3 6.230/89.430; bed-alt.mp3 36.780/71.060.
+
+Why: the 60 Hz high-pass removes rumble and turntable thump that has no
+musical content on an acoustic recording; the 8 kHz low-pass tames the
+78-rpm hiss and crackle without touching the brass (these acoustic-era
+transfers carry almost nothing above 4 kHz anyway); loudnorm puts both beds at
+the same level so gain_db in a plan means the same thing for either; the 1 s
+fades let the renderer loop or hard-cut the file without a click. No
+de-clicking, noise reduction or EQ beyond the two filters was applied, so the
+period surface noise is still audible at low level.
+
+What was verified, and how
+--------------------------
+
+- Recording dates, matrix numbers and issue numbers were cross-checked against
+  two independent discographies and agree with the uploader's item notes:
+  * Discography of American Historical Recordings (UC Santa Barbara), which
+    reproduces Laird & Rust, "Discography of OKeh Records, 1918-1934" (2004):
+      https://adp.library.ucsb.edu/index.php/matrix/detail/2000200908/8769-South
+      https://adp.library.ucsb.edu/index.php/matrix/detail/2000200911/8772-Goofy_dust
+    (South: 11/29/1924, St. Louis, take B, OKeh 8194; Goofy dust: November
+    1924, St. Louis, take A, OKeh 8184.)
+  * The Online 78 rpm Discographical Project, OKeh 8000 series listing:
+      https://www.78discography.com/OK8000.html
+    (8184A Tulsa Blues 08771=A, 8184B Goofy Dust 08772=A, 8194A Vine Street
+    Blues 08770=A, 8194B South 08769=B, all 11/29/1924.)
+- The archive.org item metadata (https://archive.org/metadata/<identifier>)
+  was fetched on 26 September 2026; both items carry licenseurl
+  https://creativecommons.org/publicdomain/zero/1.0/ and the discographic
+  notes quoted above.
+
+What could NOT be verified
+--------------------------
+
+- Exact release (publication) dates for OKeh 8184 and 8194. Neither
+  discography lists them; the pre-1926 publication is inferred from OKeh's
+  catalogue numbering as explained above. Because both sides were recorded in
+  November 1924 and issued in the ordinary course, an issue date after 1925 is
+  not plausible, and even a 1925 issue is already out of term.
+- Which physical disc and transfer chain the uploader used (the item notes
+  do not say); the JV-… identifiers are the uploader's own numbering.
+
+Considered and excluded
+-----------------------
+
+- "Kater Street Rag" and "Sister Honky Tonk" (OKeh 8277, matrices 9125 and
+  9120, recorded Kansas City, May 1925). Musically a close second, and the
+  recordings are 1925, but OKeh 8277 is late enough in the series that it may
+  not have shipped until early 1926, which would keep the recording in term
+  until 1 January 2027. Not worth the doubt when the 1924 sides are on theme.
+  Note that the archive.org "airellebigbandarchive" copy of "Sister Honky
+  Tonk" is labelled 1924; the discographies say May 1925.
+- "18th Street Strut" (OKeh 8242, May 1925): almost certainly issued in 1925
+  and a great Kansas City title, but a more uneven performance (solos with big
+  dynamic swings) than either 1924 side; a possible future swap.
+- "Thick Lip Stomp": the archive.org copy labelled 1923 is the Victor 20406
+  recording of 13 December 1926 (Chicago), not eligible until 2027. The
+  George Blood / Great 78 Project transfers of the 1927 Victor sides are
+  likewise excluded.
