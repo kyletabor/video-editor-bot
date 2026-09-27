@@ -1,53 +1,79 @@
-"""Where a cut may land: sentence boundaries and speech-free spans.
+"""Where a cut may land: word edges, sentence boundaries and shortened pauses.
 
 Kyle's review of the first reel: "You awkwardly cut off some of the segments
 when someone was still talking" and "cut out ums, ahs, and cut out the long
-silence segments". Two mechanisms answer that, both pure functions over word
-timings (words.py) and silence lists so they are testable with synthetic data:
+silence segments". An independent check of the second reel found both faults
+again in a subtler form: clip ends decided from caption cues landed inside a
+word ("...before it merges. [1.6 s] So it|" cut the "it"), and 17 pauses over
+0.9 s survived because a pause was only cut when the cut saved enough and left
+1.5 s of speech on both sides. Everything here is a pure function over word
+timings (words.py), so it is testable with synthetic data:
 
-1. `snap_outward` moves a requested [start, end] to the sentence that contains
-   each edge: start becomes the start of the sentence the requested start falls
-   in, end the end of the sentence the requested end falls in. An edge is never
-   moved inward, so a moment can only grow. `pad` then adds `lead` seconds before
-   the first word and `tail` after the last, because ASR word edges are a little
-   early and a fade needs room.
+1. Boundaries. With timed words (`WordSnapper`) a moment's END is the end of a
+   word, preferably a sentence end: it extends forward to the first word that
+   ends with . ? ! or is followed by a pause of `SENTENCE_PAUSE`, at most
+   `MAX_EXTEND_END` later; past that cap it settles on the last word end that is
+   followed by a breath (`BREATH_PAUSE`). A START is a word start, preferably
+   the start of the sentence, searched back at most `MAX_EXTEND_START`. An edge
+   inside a word moves outward to include the word; an edge in the pause after
+   a sentence moves back across silence to the word edge. Speech is never lost:
+   the result contains every word the request touched. `WordSnapper.pad` adds
+   the lead/tail air but stops `WORD_MARGIN` short of the neighbouring word,
+   which is what keeps the "So it" out. With caption cues only (`sentence_spans`,
+   `Snapper`, `snap_outward`) sentences are estimated from the cue text and the
+   cue edges stay the only safe cut points; that path is unchanged.
 
-2. `tighten` turns one padded moment into a keep-list of segments: filler
-   words ("um", "uh", an isolated "like" / "you know") are dropped and pauses
-   longer than `max_silence` are shortened to `max_silence` (a 12 s wait for an
-   answer becomes a 0.7 s beat, not a jump cut). Guardrails, in order: a cut
-   never lands inside a word (word timings are the unit; silences are clipped to
-   word edges); each kept span keeps at least `breath` seconds of air on both
-   sides; no kept fragment is shorter than `min_fragment` (the neighbouring cut
-   is cancelled instead); and if the cuts would remove more than `max_removed`
-   of the moment, the moment is left intact with a note. Filler removal needs
-   real word timings; with only caption cues it is skipped and the caller says so.
-
-Sentences come from punctuation (".", "!", "?"), a speaker change, or a pause
-longer than `SENTENCE_GAP`; an unpunctuated run (raw ASR) is capped at
-`MAX_SENTENCE` seconds so a cut can never be dragged across half a minute.
+2. Pauses and fillers. `tighten` turns one padded moment into a keep-list.
+   Filler words ("um", "uh", an isolated "like" / "you know") are dropped with
+   `breath` of air on each side, but never when that leaves a fragment shorter
+   than `min_fragment`: a stutter of joins is worse than an "um". A pause is a
+   gap between consecutive words that the audio confirms is silent (ffmpeg's
+   silencedetect, silence.py): every silent stretch longer than `max_silence`
+   is shortened to `keep_pause` by cutting its middle. That removes no speech,
+   so it needs no fragment rule. Both sources are needed: whisper's word edges
+   are approximate and it emits zero-length words (talk2 has 69; an "Okay," at
+   50:50 sits in a 0.78 s gap the audio shows is not silent at all), so a gap
+   alone can hold speech; and silencedetect alone cannot tell a quiet word end
+   from silence, so a silence is clipped to the word edges and a cut never
+   lands inside a word. What is neither word nor silence (a laugh, applause,
+   cross-talk, a breath) stays. Without silence data (`silences=None`) the
+   word gaps are trusted on their own. If the cuts would remove more than
+   `max_removed` of the moment it is left intact with a note: the guard against
+   a stretch whisper did not transcribe. Without timed words the pauses come
+   from the silences alone and are shortened to `max_silence` with more air on
+   each side, because a silence edge is less trustworthy than a word edge.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 from .words import Word
 
 LEAD_SECONDS = 0.15  # before the first word of a moment
 TAIL_SECONDS = 0.3  # after its last word
-BREATH_SECONDS = 0.15  # air kept on each side of every internal cut
+BREATH_SECONDS = 0.15  # air kept on each side of a filler cut
 MAX_SILENCE = 0.7  # pauses longer than this are shortened
-MIN_FRAGMENT = 1.5  # a kept span shorter than this is merged with a neighbour
+KEEP_PAUSE = 0.35  # ...to this: a beat, not a hole
+MIN_FRAGMENT = 1.5  # a kept span shorter than this is merged with a neighbour (filler cuts)
 MAX_REMOVED = 0.40  # never take more than this share out of one moment
 MIN_CUT = 0.2  # a filler cut shorter than this is not worth a join
-MIN_PAUSE_CUT = 0.4  # a pause is only shortened when that saves this much (a join is a jump cut)
+MIN_PAUSE_CUT = 0.4  # silence path only: a pause is shortened when that saves this much
 MAX_SEGMENTS = 20  # contract: clips[].segments maxItems
-SENTENCE_GAP = 1.5
+SENTENCE_GAP = 1.5  # cue-estimated words: a longer gap ends a sentence
 MAX_SENTENCE = 20.0
 MAX_SNAP = 12.0  # an edge never moves further than this (snap_outward)
 ISOLATION_GAP = 0.25  # a pause this long on both sides makes "like" a filler
+# Word-level snapping (WordSnapper). Real word timings resolve pauses finely enough that a
+# 0.45 s gap is a sentence boundary for cutting purposes even without punctuation.
+SENTENCE_PAUSE = 0.45
+BREATH_PAUSE = 0.25  # fallback cut point when no sentence end is within reach
+MAX_EXTEND_END = 8.0  # an end moves at most this far forward to find a sentence end
+MAX_EXTEND_START = 6.0  # a start moves at most this far back to find a sentence start
+WORD_MARGIN = 0.05  # lead/tail air stops this far short of a neighbouring word
+_EPS = 1e-6
 
 _TERMINAL = re.compile(r"[.!?]+[\"'”’)\]]*$")
 _CLAUSE_END = (",", ".", "?", "!", ";", ":", "…")
@@ -160,6 +186,161 @@ def snap_outward(start: float, end: float, spans: list[Span], max_snap: float = 
     return Snapper(spans, max_snap).snap(start, end)
 
 
+class WordSnapper:
+    """Snap times to word edges, preferring sentence edges (module docstring, 1).
+
+    Only timed words count; estimated ones (words.words_from_cues) belong to
+    `Snapper`. Built once per transcript; every lookup is a bisect. The same
+    interface as `Snapper` (`start`, `end`, `snap`) so reel.py can use either.
+
+    Fixed points, so a moments.json written by one run re-snaps to itself: a
+    start that is a sentence start and an end that is a sentence end stay put.
+    An end that came from the cap fallback (a breath, no sentence end within
+    reach) may move on to a sentence end on the next run when one lies within
+    reach of the new point; that is one step and then it is stable.
+    """
+
+    def __init__(
+        self,
+        words: list[Word],
+        *,
+        max_end: float = MAX_EXTEND_END,
+        max_start: float = MAX_EXTEND_START,
+        sentence_pause: float = SENTENCE_PAUSE,
+        breath: float = BREATH_PAUSE,
+    ):
+        self.words = sorted((w for w in words if w.timed), key=lambda w: (w.start, w.end))
+        self._starts = [w.start for w in self.words]
+        self.max_end = max_end
+        self.max_start = max_start
+        self.sentence_pause = sentence_pause
+        self.breath = breath
+
+    # -- sentence structure -------------------------------------------------
+    def _gap_after(self, k: int) -> float:
+        ws = self.words
+        return float("inf") if k + 1 >= len(ws) else ws[k + 1].start - ws[k].end
+
+    def _gap_before(self, k: int) -> float:
+        ws = self.words
+        return float("inf") if k == 0 else ws[k].start - ws[k - 1].end
+
+    def _ends_sentence(self, k: int) -> bool:
+        ws = self.words
+        if k + 1 >= len(ws) or _TERMINAL.search(ws[k].text):
+            return True
+        return self._gap_after(k) >= self.sentence_pause - _EPS or not _same_speaker(ws[k], ws[k + 1])
+
+    def _starts_sentence(self, k: int) -> bool:
+        return k == 0 or self._ends_sentence(k - 1)
+
+    # -- edges ---------------------------------------------------------------
+    def end(self, t: float) -> float:
+        """A word end at or after the speech `t` touches, preferably a sentence end.
+
+        Inside a word: that word and on to its sentence end. At a word end, or in
+        the pause after a sentence: back to that word end (across silence only).
+        At a word end mid-sentence, or in a short gap: on to the sentence end.
+        """
+        ws = self.words
+        if not ws:
+            return t
+        i = bisect_right(self._starts, t) - 1  # last word starting at or before t
+        if i >= 0 and ws[i].start >= t - _EPS:  # exactly a word start: the end of what came before
+            i -= 1
+        if i >= 0 and ws[i].end > t + _EPS:  # inside word i
+            return self._extend(i, t)
+        if i >= 0 and self._ends_sentence(i):  # at, or in the pause after, a sentence end
+            return ws[i].end
+        j = i + 1  # mid-sentence (i < 0: before the first word)
+        return self._extend(j, t) if j < len(ws) else t
+
+    def _extend(self, j: int, t: float) -> float:
+        ws = self.words
+        limit = t + self.max_end
+        if ws[j].start > limit:  # only before the first word: nothing to end on within reach
+            return t
+        breath = None
+        k = j
+        while k < len(ws) and ws[k].end <= limit + _EPS:
+            if self._ends_sentence(k):
+                return ws[k].end
+            if self._gap_after(k) >= self.breath - _EPS:
+                breath = ws[k].end
+            k += 1
+        if breath is not None:
+            return breath
+        return ws[max(j, k - 1)].end  # the last word end within the cap; never inside a word
+
+    def start(self, t: float) -> float:
+        """A word start at or before the speech `t` touches, preferably a sentence start.
+
+        Inside a word, or at a word end mid-sentence: back to the start of that
+        sentence. In the pause after a sentence, or before the first word: on to
+        the next word (across silence only).
+        """
+        ws = self.words
+        if not ws:
+            return t
+        i = bisect_right(self._starts, t) - 1  # last word starting at or before t
+        if i >= 0 and (ws[i].end > t + _EPS or not self._ends_sentence(i)):
+            return self._retreat(i, t)
+        j = i + 1
+        return ws[j].start if j < len(ws) else t
+
+    def _retreat(self, j: int, t: float) -> float:
+        ws = self.words
+        floor = t - self.max_start
+        breath = None
+        k = j
+        while not self._starts_sentence(k):
+            if self._gap_before(k) >= self.breath - _EPS:
+                breath = ws[k].start
+            if ws[k - 1].start < floor - _EPS:  # the sentence start is out of reach
+                return breath if breath is not None else ws[j].start
+            k -= 1
+        return ws[k].start
+
+    def snap(self, start: float, end: float) -> tuple[float, float]:
+        return self.start(start), self.end(end)
+
+    # -- around the edges ----------------------------------------------------
+    def speech_edges(self, start: float, end: float) -> tuple[float, float]:
+        """The first and last word edges inside [start, end]. A word partly
+        inside counts whole; silence at the edges is dropped. Unchanged when no
+        word overlaps the span (a moment whisper has nothing for)."""
+        ws = self.words
+        i = bisect_right(self._starts, start) - 1
+        if i < 0 or ws[i].end <= start + _EPS:
+            i += 1
+        j = bisect_left(self._starts, end) - 1  # last word starting before end
+        if i > j:
+            return start, end
+        return ws[i].start, ws[j].end
+
+    def neighbours(self, start: float, end: float) -> tuple[Word | None, Word | None]:
+        """The last word ending at or before `start` and the first starting at or after `end`."""
+        ws = self.words
+        i = bisect_right(self._starts, start + _EPS) - 1
+        while i >= 0 and ws[i].end > start + _EPS:
+            i -= 1
+        j = bisect_left(self._starts, end - _EPS)
+        return (ws[i] if i >= 0 else None), (ws[j] if j < len(ws) else None)
+
+    def pad(self, start: float, end: float, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS,
+            duration: float | None = None) -> tuple[float, float]:
+        """`pad`, but the air stops `WORD_MARGIN` short of the neighbouring words,
+        so a tail never runs into the next word and a lead never clips the end of
+        the previous one. Words that abut leave no room: the cut is the word edge."""
+        prev, nxt = self.neighbours(start, end)
+        s, e = pad(start, end, lead, tail, duration)
+        if prev is not None:
+            s = min(start, max(s, prev.end + WORD_MARGIN))
+        if nxt is not None:
+            e = max(end, min(e, nxt.start - WORD_MARGIN))
+        return s, e
+
+
 def pad(start: float, end: float, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS,
         duration: float | None = None) -> tuple[float, float]:
     """Air before the first word and after the last, clamped to the source."""
@@ -212,7 +393,7 @@ class CutReport:
     segments: tuple[tuple[float, float], ...]
     fillers: int = 0  # filler words removed
     filler_seconds: float = 0.0
-    silence_seconds: float = 0.0
+    silence_seconds: float = 0.0  # pauses shortened (word gaps, or detected silence without words)
     intact: bool = False  # a guardrail kept the moment whole
     note: str = ""
 
@@ -231,18 +412,6 @@ def _merge(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return out
 
 
-def _merge_kinds(raw: list[tuple[float, float, bool]]) -> list[tuple[float, float, bool]]:
-    """Merge overlapping (a, b, has_filler) intervals; a merged group is a filler
-    cut if any part of it was."""
-    out: list[tuple[float, float, bool]] = []
-    for a, b, f in sorted(raw):
-        if out and a <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], b), out[-1][2] or f)
-        else:
-            out.append((a, b, f))
-    return out
-
-
 def _fragments(start: float, end: float, removals: list[tuple[float, float]]) -> list[tuple[float, float]]:
     frags: list[tuple[float, float]] = []
     cur = start
@@ -255,36 +424,12 @@ def _fragments(start: float, end: float, removals: list[tuple[float, float]]) ->
     return frags
 
 
-def tighten(
-    start: float,
-    end: float,
-    words: list[Word],
-    silences: list[tuple[float, float]],
-    *,
-    fillers: bool = True,
-    max_silence: float = MAX_SILENCE,
-    breath: float = BREATH_SECONDS,
-    min_fragment: float = MIN_FRAGMENT,
-    max_removed: float = MAX_REMOVED,
-) -> CutReport:
-    """Keep-list for one moment [start, end] (module docstring, point 2).
-
-    `words` may be empty or estimated (`timed=False`): then only `silences`,
-    which come from the audio itself (silence.py), are cut. `silences` are
-    absolute (start, end) pairs; those shorter than `max_silence` are ignored.
-    """
-    whole = ((start, end),)
-    if end <= start:
-        return CutReport(whole)
-    inside = [w for w in words if w.timed and w.start >= start and w.end <= end]
-    mask = filler_mask(inside) if fillers and inside else [False] * len(inside)
-    kept = [w for w, f in zip(inside, mask) if not f]
-
-    raw: list[tuple[float, float, bool]] = []  # (a, b, has_filler)
-    filler_count = 0
-    filler_seconds = 0.0
+def _filler_cuts(inside: list[Word], mask: list[bool], start: float, end: float, breath: float) -> list[tuple[float, float]]:
+    """Each run of fillers becomes the whole gap between its kept neighbours, less
+    `breath` of air on each side; no air is needed at the moment's own edges."""
+    raw: list[tuple[float, float]] = []
     i = 0
-    while i < len(inside):  # each run of fillers -> the whole gap between its kept neighbours
+    while i < len(inside):
         if not mask[i]:
             i += 1
             continue
@@ -293,76 +438,154 @@ def tighten(
             j += 1
         a = inside[i - 1].end if i > 0 else start
         b = inside[j + 1].start if j + 1 < len(inside) else end
-        raw.append((a, b, True))
-        filler_count += j - i + 1
-        filler_seconds += sum(w.duration for w in inside[i:j + 1])
+        a = a if a <= start else a + breath
+        b = b if b >= end else b - breath
+        if b - a >= MIN_CUT:
+            raw.append((a, b))
         i = j + 1
+    return _merge(raw)
+
+
+def _silence_cuts(silences: list[tuple[float, float]], start: float, end: float, max_silence: float,
+                  breath: float) -> list[tuple[float, float]]:
+    """Silence path (no timed words): a detected silence longer than `max_silence` is
+    shortened to `max_silence`, split as air on both sides, when that saves MIN_PAUSE_CUT."""
+    air = max(breath, max_silence / 2)
+    out: list[tuple[float, float]] = []
     for s, e in silences:
         s, e = max(s, start), min(e, end)
-        pieces = [(s, e)]
-        for w in kept:  # never cut inside a word: carve the words out of the silence
-            if w.end <= s or w.start >= e:
-                continue
-            carved: list[tuple[float, float]] = []
-            for p, q in pieces:
-                if w.end <= p or w.start >= q:
-                    carved.append((p, q))
-                    continue
-                if w.start > p:
-                    carved.append((p, w.start))
-                if w.end < q:
-                    carved.append((w.end, q))
-            pieces = carved
-        raw.extend((p, q, False) for p, q in pieces if q - p > max_silence)
+        if e - s <= max_silence:
+            continue
+        a = s if s <= start else s + air
+        b = e if e >= end else e - air
+        if b - a >= MIN_PAUSE_CUT:
+            out.append((a, b))
+    return _merge(out)
 
-    pause_air = max(breath, max_silence / 2)  # a shortened pause is still `max_silence` long
 
-    def breathe(intervals: list[tuple[float, float, bool]]) -> list[tuple[float, float]]:
-        out = []
-        for a, b, has_filler in intervals:
-            air = breath if has_filler else pause_air
-            a2 = a if a <= start else a + air  # no air needed at the moment's own edges
-            b2 = b if b >= end else b - air
-            if b2 - a2 >= (MIN_CUT if has_filler else MIN_PAUSE_CUT):
-                out.append((a2, b2))
-        return out
+def _touches(cut: tuple[float, float], frag: tuple[float, float]) -> bool:
+    return abs(cut[1] - frag[0]) < 1e-9 or abs(cut[0] - frag[1]) < 1e-9
 
-    removals = breathe(_merge_kinds(raw))
-    if not removals:
-        return CutReport(whole)
+
+def _absorb(cuts: list[tuple[float, float]], frag: tuple[float, float]) -> list[tuple[float, float]]:
+    """Extend the cuts that border `frag` across it."""
+    return [
+        (c[0], frag[1]) if abs(c[1] - frag[0]) < 1e-9 else (frag[0], c[1]) if abs(c[0] - frag[1]) < 1e-9 else c
+        for c in cuts
+    ]
+
+
+def _protect_fragments(start: float, end: float, free: list[tuple[float, float]], fixed: list[tuple[float, float]],
+                       kept: list[Word], min_fragment: float) -> list[tuple[float, float]]:
+    """No kept fragment shorter than `min_fragment` where a cut can be helped.
+
+    A fragment of pure air between cuts is absorbed into them. One with speech
+    grows by cancelling the shorter adjacent `free` cut (a filler cut), but only
+    when that lengthens it by more than a hair: `fixed` cuts (shortened pauses)
+    are never cancelled because they remove no speech, and a filler cut that a
+    pause cut backs would, if cancelled, leave the filler standing as an island
+    between two joins, which is worse than either cut alone."""
 
     def has_speech(frag: tuple[float, float]) -> bool:
         return any(w.start < frag[1] and w.end > frag[0] for w in kept)
 
-    while removals:
+    free = list(free)
+    fixed = _merge(list(fixed))
+    accepted: list[tuple[float, float]] = []  # short fragments nothing can be done about
+    while True:
+        removals = _merge(free + fixed)
         frags = _fragments(start, end, removals)
-        short = [f for f in frags if f[1] - f[0] < min_fragment]
-        if not short:
-            break
-        f = min(short, key=lambda x: x[1] - x[0])
-        left = next((r for r in removals if abs(r[1] - f[0]) < 1e-9), None)
-        right = next((r for r in removals if abs(r[0] - f[1]) < 1e-9), None)
-        if not has_speech(f) and (left or right):  # only air in there: absorb it into the cut
-            keep = [r for r in removals if r is not left and r is not right]
-            a = left[0] if left else f[0]
-            b = right[1] if right else f[1]
-            removals = _merge(keep + [(a, b)])
-        else:  # speech: cancel the shorter neighbouring cut so the fragment can grow
-            victim = min((r for r in (left, right) if r), key=lambda r: r[1] - r[0], default=None)
-            if victim is None:
-                break
-            removals = [r for r in removals if r is not victim]
-    while len(_fragments(start, end, removals)) > MAX_SEGMENTS:
-        removals.remove(min(removals, key=lambda r: r[1] - r[0]))
+        short = sorted((f for f in frags if f[1] - f[0] < min_fragment and f not in accepted), key=lambda x: x[1] - x[0])
+        changed = False
+        for f in short:
+            if not has_speech(f):
+                if any(_touches(r, f) for r in removals):
+                    free, fixed = _absorb(free, f), _merge(_absorb(fixed, f))
+                    changed = True
+                    break
+            else:
+                adjacent = [c for c in free if _touches(c, f)]
+                if adjacent:
+                    victim = min(adjacent, key=lambda c: c[1] - c[0])
+                    trial = _fragments(start, end, _merge([c for c in free if c is not victim] + fixed))
+                    grown = any(g[0] <= f[0] + 1e-9 and g[1] >= f[1] - 1e-9 and g[1] - g[0] > f[1] - f[0] + MIN_CUT / 2
+                                for g in trial)
+                    if grown:
+                        free.remove(victim)
+                        changed = True
+                        break
+            accepted.append(f)
+        if not changed:
+            return _merge(free + fixed)
+
+
+def _gap_cuts(inside: list[Word], silences: list[tuple[float, float]] | None, max_silence: float,
+              keep_pause: float) -> list[tuple[float, float]]:
+    """Word path: the middle of every silent stretch longer than `max_silence` between
+    two consecutive words, leaving `keep_pause`. A stretch is the word gap itself when
+    the audio was not checked (`silences is None`), else the gap's overlap with each
+    detected silence, so it never reaches into a word and never crosses sound."""
+    half = keep_pause / 2
+    out: list[tuple[float, float]] = []
+    for a, b in zip(inside, inside[1:]):
+        if b.start - a.end <= max_silence + _EPS:
+            continue
+        if silences is None:
+            stretches = [(a.end, b.start)]
+        else:
+            stretches = [(max(s, a.end), min(e, b.start)) for s, e in silences if min(e, b.start) > max(s, a.end)]
+        out.extend((s + half, e - half) for s, e in stretches if e - s > max_silence + _EPS)
+    return _merge(out)
+
+
+def tighten(
+    start: float,
+    end: float,
+    words: list[Word],
+    silences: list[tuple[float, float]] | None,
+    *,
+    fillers: bool = True,
+    pauses: bool = True,
+    max_silence: float = MAX_SILENCE,
+    keep_pause: float = KEEP_PAUSE,
+    breath: float = BREATH_SECONDS,
+    min_fragment: float = MIN_FRAGMENT,
+    max_removed: float = MAX_REMOVED,
+) -> CutReport:
+    """Keep-list for one padded moment [start, end] (module docstring, 2).
+
+    `silences` are absolute (start, end) pairs from silence.py for this moment;
+    `None` means the audio was not checked. With timed words inside the moment a
+    pause is a word gap confirmed by a silence (or the bare gap when there is no
+    silence data). Without timed words the silences are the only pauses known
+    and are cut the old way. `fillers=False` keeps every word; `pauses=False`
+    keeps every gap.
+    """
+    whole = ((start, end),)
+    if end <= start:
+        return CutReport(whole)
+    inside = [w for w in words if w.timed and w.start >= start - _EPS and w.end <= end + _EPS]
+    mask = filler_mask(inside) if fillers and inside else [False] * len(inside)
+    kept = [w for w, f in zip(inside, mask) if not f]
+
+    free = _filler_cuts(inside, mask, start, end, breath) if fillers else []  # may be cancelled for a fragment
+    gap_cuts: list[tuple[float, float]] = []  # never cancelled: no speech in them
+    if pauses and inside:
+        gap_cuts = _gap_cuts(inside, silences, max_silence, keep_pause)
+    elif pauses:
+        free += _silence_cuts(silences or [], start, end, max_silence, breath)
+    removals = _protect_fragments(start, end, free, gap_cuts, kept, min_fragment)
     if not removals:
         return CutReport(whole)
+    while len(_fragments(start, end, removals)) > MAX_SEGMENTS:
+        removals.remove(min(removals, key=lambda r: r[1] - r[0]))
 
     removed = sum(b - a for a, b in removals)
     share = removed / (end - start)
     if share > max_removed:
         return CutReport(whole, intact=True,
                          note=f"cuts would remove {share:.0%} of the moment (limit {max_removed:.0%}); kept intact "
-                              "(long dead air or a quiet speaker: shorten the moment or check the audio)")
-    segments = tuple(_fragments(start, end, removals))
-    filler_seconds = min(filler_seconds, removed)
-    return CutReport(segments, filler_count, filler_seconds, removed - filler_seconds)
+                              "(long dead air, or speech whisper did not transcribe: shorten the moment or check the audio)")
+    gone = [w for w, f in zip(inside, mask) if f and any(a < (w.start + w.end) / 2 < b for a, b in removals)]
+    filler_seconds = min(sum(w.duration for w in gone), removed)
+    return CutReport(tuple(_fragments(start, end, removals)), len(gone), filler_seconds, removed - filler_seconds)
