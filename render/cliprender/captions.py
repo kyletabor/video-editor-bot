@@ -131,12 +131,76 @@ def format_srt(cues: Iterable[Cue]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+# Caption lines that carry no speech, as Google Meet and Zoom embed them: a speaker tag
+# "(Kyle Tabor)" (or the anonymous "()") introduces the speech on the line after it, and a
+# lone "-" closes the speech on the line before it where another voice took over.
+_ANNOTATION = re.compile(r"^\s*(?:\([^)]*\)|-+)\s*$")
+_WORD = re.compile(r"\S+")
+
+MIN_KEPT_FRACTION = 0.25
+"""Share of a cue's duration a cut must leave for the cue to survive (strictly more than this)."""
+
+
+def _trim_words(text: str, kept_from: float, kept_to: float) -> str:
+    """Keep the words spoken during the fraction ``[kept_from, kept_to]`` of a cue.
+
+    Caption cues carry no per-word timing, so the words are taken to be evenly spaced
+    over the cue: word ``i`` of ``n`` is kept when its centre ``(i + 0.5) / n`` lies in
+    the kept fraction. That keeps one run of words from the side the cut did not
+    touch, at word boundaries, with the original spacing between them. Annotation
+    lines hold no words and follow the speech they belong to: a speaker tag stays
+    with the next content line, a cut marker with the previous one, so a trimmed
+    sidecar cue still names its speaker. Text that has no words at all (annotations
+    only) is returned unchanged; text whose words are all cut becomes empty.
+    """
+    lines = text.split("\n")
+    found = [None if _ANNOTATION.match(line) else list(_WORD.finditer(line)) for line in lines]
+    total = sum(len(words) for words in found if words is not None)
+    if total == 0:
+        return text
+    kept: list[str | None] = []
+    first = 0
+    for line, words in zip(lines, found):
+        if words is None:
+            kept.append(None)
+            continue
+        inside = [
+            match
+            for index, match in enumerate(words, first)
+            if kept_from <= (index + 0.5) / total <= kept_to
+        ]
+        first += len(words)
+        kept.append(line[inside[0].start() : inside[-1].end()] if inside else "")
+    result = []
+    for position, (line, remaining) in enumerate(zip(lines, kept)):
+        if remaining is None:
+            step = 1 if line.lstrip().startswith("(") else -1
+            neighbour = position + step
+            while 0 <= neighbour < len(lines) and kept[neighbour] is None:
+                neighbour += step
+            if 0 <= neighbour < len(lines) and kept[neighbour]:
+                result.append(line)
+        elif remaining:
+            result.append(remaining)
+    return "\n".join(result)
+
+
 def retime(cues: Iterable[Cue], segments: Iterable[Mapping[str, float]]) -> list[Cue]:
     """Intersect cues with half-open segments and join in the supplied order.
 
     Each segment refers to the original source timeline. Repeated and reordered
     segments therefore repeat and reorder captions, too. A cue spanning an edit
     is split at that boundary, and cues that only touch a boundary are excluded.
+
+    A cue that a segment edge cuts through keeps only the words spoken in its kept
+    part (``_trim_words``). Meeting recorders emit cues of about four seconds, so
+    a clip that starts partway through one would otherwise open on a caption full
+    of words the viewer never hears: the first Talk #2 reel opened on "Normally
+    what you would do" under the caption "I don't know. I don't know. I so, okay,
+    normally what you would do". A cue that keeps ``MIN_KEPT_FRACTION`` of its
+    duration or less, or no whole word, is dropped rather than shown as a
+    fragment. A cue wholly inside a segment keeps its text byte for byte, so
+    sidecar files are unchanged wherever no cut passes through a cue.
     """
     source = sorted(
         (_validated(cue, f"Cue {position}") for position, cue in enumerate(cues, 1)),
@@ -158,15 +222,21 @@ def retime(cues: Iterable[Cue], segments: Iterable[Mapping[str, float]]) -> list
                 break
             kept_start = max(start, cue.start)
             kept_end = min(end, cue.end)
-            if kept_start < kept_end:
-                output.append(
-                    Cue(offset + (kept_start - start), offset + (kept_end - start), cue.text)
+            if kept_start >= kept_end:
+                continue
+            text = cue.text
+            if kept_start > cue.start or kept_end < cue.end:
+                span = cue.end - cue.start
+                if (kept_end - kept_start) / span <= MIN_KEPT_FRACTION:
+                    continue
+                text = _trim_words(
+                    cue.text, (kept_start - cue.start) / span, (kept_end - cue.start) / span
                 )
+                if not text.strip():
+                    continue
+            output.append(Cue(offset + (kept_start - start), offset + (kept_end - start), text))
         offset += duration
     return output
-
-
-_BURN_NOISE = re.compile(r"^\s*(?:\([^)]*\)|-+|\(\))\s*$")
 
 
 def tidy_for_burn(cues: Iterable[Cue]) -> list[Cue]:
@@ -180,7 +250,7 @@ def tidy_for_burn(cues: Iterable[Cue]) -> list[Cue]:
     """
     tidy = []
     for cue in cues:
-        lines = [line for line in cue.text.splitlines() if not _BURN_NOISE.match(line)]
+        lines = [line for line in cue.text.splitlines() if not _ANNOTATION.match(line)]
         text = "\n".join(line.strip() for line in lines if line.strip())
         if text:
             tidy.append(Cue(cue.start, cue.end, text))
