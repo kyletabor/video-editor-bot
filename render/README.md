@@ -86,7 +86,7 @@ after a failed media job; schema/semantic validation errors create no output.
 | `takeaway`, `hook_offset_seconds` | Store the takeaway as MP4 title and informational hook offset as MP4 comment. No title-card effect or segment reordering is implied. |
 | `summary.path` | Copy the existing companion document by basename, byte for byte; preserve it if already at its destination. No PDF conversion or summary generation. |
 | `output.reel` (v1.1) | After every clip is verified, draw the cards, conform each segment in one `concat` filter graph, re-encode, verify the reel like a clip and publish `output.dir/<filename>` (default `reel.mp4`) in the same transaction: a reel failure publishes nothing. `chapter_cards`: `auto` shows a card only where a clip has `card`, `all` synthesizes one from `takeaway`, `none` drops chapter cards but keeps intro/outro. Warn above 10 minutes, never reject. A reel named after a clip is rejected as a filename collision. |
-| `reel.intro`, `reel.outro`, `clips[].card` | Full-frame dark slide drawn with Pillow's bundled font at the reel's size: title (at most two rows), up to four lines (two rows each, ellipsized), chapter footer `k of N · h:mm:ss` naming the clip's place and its first segment's source time. Shown for `seconds` (default 3) with silence at the source's sample rate and channel layout; a silent source gives a silent reel. |
+| `reel.intro`, `reel.outro`, `clips[].card` | Full-frame dark slide drawn with Pillow's bundled font at the reel's size: title (up to three rows), up to four lines (up to three rows each), chapter footer `k of N · h:mm:ss` naming the clip's place and its first segment's source time. Text wraps on word boundaries only and, when it does not fit, the font shrinks in 12 % steps (100 → 88 → 76 … → 40 %) instead of the text being cut: every contract-valid card (80-character title, 4 × 120-character lines) is shown in full on 16:9, 9:16 and 1:1, and the text block always ends above the footer band (see [Card text fit](#card-text-fit)). Shown for `seconds` (default 3) with silence at the source's sample rate and channel layout; a silent source gives a silent reel. |
 | `reel.opening[]`, `reel.closing[]` (v1.2) | Cards after the intro and before the outro, drawn like the others but without a chapter footer (they are not chapters). Timeline: `[intro] + opening + Σ([card] + clip) + closing + [outro]`. |
 | `reel.music` (v1.2) | A bed under every run of consecutive cards (`under: cards`, faded at the run edges, continuing through the reel from a running offset) or under the whole reel at `duck_db` beneath speech and `gain_db` beneath cards (`under: all`). Looped when `loop` and the file is shorter than needed. Missing file: rejected before any tool starts. Source without audio: rejected. Never clips: see [Reel v1.2](#reel-v12-openingclosing-cards-music-transitions-fades). |
 | `reel.transition` (v1.2) | `cut` = the v1.1 join. `dip` = video fades to black and back at every join, length unchanged. `dissolve` = `xfade`/`acrossfade` between consecutive segments; the reel shortens by `seconds` per join. Shortened with a warning when a segment cannot hold it. |
@@ -356,3 +356,53 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   (4.4.2). With `gain_db: -18` on the −16.5 LUFS bed the music sits about 18 dB under the
   speech: clearly there under the cards, but subtle; −12 to −14 dB would be bolder. The
   contract owns that default.
+
+### Changes on 2026-09-26 (Kyle's agent): card text fit — for Ramsey's review
+
+- **Why**: an independent check of the 2026-09-25 recording's reel found three chapter titles
+  (75, 80 and 77 characters) cut with "…" on 1920 × 1080, so the lesson read as a broken
+  sentence for three seconds ("Two agents, one repo: let them coordinate through the code,
+  not…"). The contract allows 80-character titles and 4 × 120-character lines; a layout that
+  gave the title two rows and ellipsized the rest could not honour that.
+- **What** (`cliprender/cards.py`, see [Card text fit](#card-text-fit)): `layout` resolves
+  fonts, rows and positions before `draw_card` paints. Titles get up to three rows and each
+  line up to three; rows break on word boundaries only; when text still does not fit, the font
+  shrinks in 12 % steps (`SHRINK_STEPS`, 100 → 40 %), each block on its own for width and
+  then, while the block would run into the footer band, the lines first and the title once
+  the lines have fallen two steps behind it. The footer band is reserved on every card. The
+  ellipsis remains only as a last resort for text outside the contract or frames narrower
+  than 1:1. A card that fitted before is drawn at the same size and position as before.
+- **Tests** (`tests/test_cards.py`, 114 → 128 in the renderer suite): the three truncated
+  titles with their real lines fit in three rows at full size on 1920 × 1080; an 80-character
+  title of long words fits without an ellipsis, every word whole, on all three aspects
+  (shrinking on 9:16 and 1:1); four 120-character long-word lines stay whole, three rows each
+  at most, and end above the footer band on all three aspects; a tall card shrinks its lines
+  before its title; a PNG check that the bright text pixels stay inside the margins and above
+  the footer band; the fallback for text beyond the contract.
+- **Acceptance**: every card of that recording's reel (`out/final/plan.json`, 15 cards) lays
+  out without an ellipsis on 16:9, 9:16 and 1:1; on 16:9 all stay at full size, the three
+  long titles now on three rows. `contract/examples/reel-with-music.json` re-rendered:
+  49.07 s (7.0.2), 1920 × 1080 at 24 fps, AAC 48 kHz stereo, unchanged.
+
+## Card text fit
+
+A card is on screen for a few seconds and cannot be scrolled, so text that is cut reads as
+a broken sentence. `cliprender.cards.layout` therefore fits the text before drawing it:
+
+1. **Width.** The title is wrapped on word boundaries into at most three rows; if it needs
+   more at the base size (88 px on a 1080-pixel short edge), the title font shrinks one step
+   (`SHRINK_STEPS`: 100, 88, 76, 64, 52, 40 %) and wraps again. The lines (up to four, 46 px
+   base) are one block: they share a font and shrink together until each fits three rows.
+2. **Height.** The text block must end above the footer band (reserved on every card so
+   intro, chapter and closing cards share one rhythm). While it would not, the lines shrink a
+   step, being the bulk of the text, and the title follows once the lines have fallen two
+   steps behind it, so the hierarchy survives without the title paying for text it did not
+   cause.
+3. **Last resort.** Only at the smallest step are words wider than the column split at
+   characters and rows beyond the maximum ellipsized. Text within the contract never gets
+   there on a contract aspect: the tests lay out the extremes (80-character long-word title,
+   four 120-character long-word lines) on 16:9, 9:16 and 1:1.
+
+The layout is proportional to the frame (margins to the width, fonts to the short edge), so
+what fits at 1080p fits at every resolution of the same aspect. On 16:9 every card of the
+first real reel keeps the base size; the narrow aspects shrink long titles to 88 or 76 %.
