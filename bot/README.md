@@ -12,6 +12,7 @@ uv run --project bot clipbot reel    --source talk.mp4 --srt talk.srt --words ta
 uv run --project bot clipbot outline --source talk.mp4 --out out/talk/outline.md
 uv run --project bot clipbot plan    --source talk.mp4 --request "the part about beads" --out out/talk/plan.json
 uv run --project bot clipbot summarize --source talk.mp4 --out out/talk/summary.md
+uv run --project bot clipbot audit-plan out/talk/plan.json --audio talk.wav [--words talk.words.json]
 ```
 
 ## Why a reel
@@ -88,13 +89,15 @@ moment, whichever way it was chosen, now goes through the same steps:
    into the next word.
 3. **Fillers and pauses** (on by default; `--keep-fillers` turns it off).
    "um", "uh", "ah", "er", "hmm", and "like" / "you know" when set off by commas
-   or pauses, are cut with 0.15 s of breath on each side. A pause is where the
-   **audio** is silent (`ffmpeg -af silencedetect=noise=-35dB` on the source,
-   downmixed to mono, one seek per moment, in parallel; silences separated by
-   less than 0.1 s of sound, a click, count as one), not where whisper has no
-   word: every silent stretch longer than `--max-silence` (0.7 s) between two
-   pieces of speech is shortened to `--keep-pause` (0.35 s) by cutting its
-   middle, and silence at a moment's own edges is trimmed to the lead/tail.
+   or pauses, are cut from the pause before them to the pause after them (point
+   5 below). A pause is where the **audio** is silent
+   (`ffmpeg -af silencedetect=noise=-35dB` on the source, downmixed to mono, one
+   seek per moment, in parallel, every silence of at least 0.12 s; silences
+   separated by less than 0.1 s of sound, a click, count as one), not where
+   whisper has no word: every silent stretch longer than `--max-silence` (0.7 s)
+   between two pieces of speech is shortened to `--keep-pause` (0.35 s) by
+   cutting its middle, and silence at a moment's own edges is trimmed to the
+   lead/tail.
    Both sources are needed: whisper emits zero-length words and misses speech
    (on talk2 a "gap" between words held 1.7 s of untranscribed speech at full
    volume), so a gap alone can be speech; and the detector alone cannot tell a
@@ -120,8 +123,38 @@ moment, whichever way it was chosen, now goes through the same steps:
    that lies wholly (or all but a sliver) in silence is left alone: a quiet
    speaker or a hallucination, nobody knows where the words are. Voiced audio is
    never cut: a cut only ever lies inside a detected silence, with 0.175 s (or
-   the lead/tail at a moment's edges) of that silence kept on each side. Filler
-   cuts measure their breath from the same acoustic edges.
+   the lead/tail at a moment's edges) of that silence kept on each side.
+5. **A filler, and a clip's first and last word, are anchored to pauses, not to
+   whisper's timestamps.** The fourth reel's verifier measured the audio at all
+   86 segment edges: 11 had speech above -25 dB on both sides, nine of them
+   filler cuts. Whisper times an "uh" 50-150 ms off, so "word edge + 0.15 s of
+   breath" landed inside the filler or inside the next word. Now a filler is the
+   voiced blob between the pause that ends just before it and the pause that
+   begins just after it (each within 0.35 s of the filler's acoustic edges), and
+   the cut runs from 0.175 s into the first pause to 0.175 s before the end of
+   the second, so the join is a pause. A filler with no pause on one side ("Uh,
+   it's just..." in one breath, which is how most are said) **stays** and is
+   counted (`N fillers kept: no pause beside them`): an "uh" is a lesser fault
+   than a cut through a word. A pause that begins more than 0.05 s into the
+   neighbouring word is a stop closure inside that word ("crea-t-ing" holds a
+   0.13 s silence), not a pause beside it, and does not count. The clip's start
+   moves to 0.15 s before the end of the pause nearest its first word (within
+   0.8 s: whisper put a zero-length "So" 0.68 s after the sound began) and its
+   end to 0.3 s after the start of the pause nearest its last word, unless
+   whisper's neighbouring word lies past that pause. Where the speaker ran two
+   sentences together and no pause exists within reach, the edge stays on the
+   word boundary and the audit below reports it (talk2 has two such starts,
+   "cases. What could go wrong?" and "this. And so").
+
+**`clipbot audit-plan PLAN --audio FILE`** is the check the cutter is held to
+(`clipbot/audit.py`): it reads the 40 ms before and after every segment edge
+straight from the waveform and prints each edge where the peak is above -25 dB
+on **both** sides (the cut runs through sound), then the count line the tests and
+PRs quote: `edges: 86, voiced on both sides (> -25 dB within 40 ms): 2`. It
+shares nothing with the cutter, needs no ffmpeg when `--audio` is a 16-bit PCM
+WAV (anything else is decoded first), and exits 1 when there is an offender, so
+it can gate a script. `--words FILE` names the word whisper puts at each
+offending edge; `--all` prints every edge.
 
 The run prints, per moment, the requested span, the snapped span and what was
 cut; the moment's `segments` in the plan are the keep-list. The runtime on the
