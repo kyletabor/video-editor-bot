@@ -38,6 +38,7 @@ from dataclasses import dataclass, replace
 
 from .captions import Cue
 from .cuts import (
+    EDGE_REACH,
     KEEP_PAUSE,
     LEAD_SECONDS,
     MAX_SILENCE,
@@ -46,6 +47,7 @@ from .cuts import (
     Snapper,
     Span,
     WordSnapper,
+    anchor_edges,
     pad,
     sentence_spans,
     tighten,
@@ -575,6 +577,16 @@ def fit_moments(candidates: list[Moment], minutes: float) -> list[Moment]:
     return picked
 
 
+def detection_spans(
+    moments: list[Moment], *, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS, duration: float | None = None
+) -> list[tuple[float, float]]:
+    """Where silence.py should look for each moment: the padded span plus
+    cuts.EDGE_REACH and the air on each side, so the pause beside a first or last
+    word that whisper timed late (or early) is seen whole (cuts.anchor_edges)."""
+    margin = EDGE_REACH + max(lead, tail)
+    return [pad(m.start, m.end, lead + margin, tail + margin, duration) for m in moments]
+
+
 def segments_for(
     m: Moment, *, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS, duration: float | None = None
 ) -> tuple[tuple[float, float], ...]:
@@ -597,15 +609,19 @@ def cut_moments(
     keep_pause: float = KEEP_PAUSE,
 ) -> tuple[list[Moment], list[CutReport]]:
     """Lead/tail air, then filler + pause removal for every moment (cuts.tighten);
-    `silences[i]` is what silence.py found in `moments[i]`, `None` (for one
-    moment or for all) when the audio was not checked.
+    `silences[i]` is what silence.py found in and around `moments[i]` (every
+    silence of at least cuts.MIN_PAUSE, out to `detection_spans`), `None` (for
+    one moment or for all) when the audio was not checked.
 
     With timed words a moment's speech edges become its first and last word
     edges (a moment that `resolve_overlaps` started in the pause after its
     neighbour now starts on its first word), and the air stops short of the
     neighbouring words (cuts.WordSnapper.pad), so no tail ever runs into the
-    next word. Returns the moments with `start`/`end`/`segments` updated and one
-    report each. `fillers=False, pauses=False` only pads."""
+    next word. With silence data the padded edges then move onto the pauses the
+    audio shows beside the first and last word (cuts.anchor_edges): whisper's
+    word edge is an estimate and a clip that opened on it opened mid-word.
+    Returns the moments with `start`/`end`/`segments` updated and one report
+    each. `fillers=False, pauses=False` only pads (and anchors)."""
     snapper = WordSnapper(words) if any(w.timed for w in words) else None
     out: list[Moment] = []
     reports: list[CutReport] = []
@@ -616,6 +632,9 @@ def cut_moments(
         if snapper is not None:
             start, end = snapper.speech_edges(start, end)
             s, e = snapper.pad(start, end, lead, tail, duration)
+            if sil is not None:
+                prev, nxt = snapper.neighbours(start, end)
+                s, e = anchor_edges(s, e, start, end, sil, prev=prev, nxt=nxt, lead=lead, tail=tail, duration=duration)
         else:
             s, e = pad(start, end, lead, tail, duration)
         rep = tighten(s, e, words, sil, fillers=fillers, pauses=pauses, max_silence=max_silence, keep_pause=keep_pause,

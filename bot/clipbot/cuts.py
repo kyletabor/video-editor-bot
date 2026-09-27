@@ -24,9 +24,11 @@ timings (words.py), so it is testable with synthetic data:
    cue edges stay the only safe cut points; that path is unchanged.
 
 2. Pauses and fillers. `tighten` turns one padded moment into a keep-list.
-   Filler words ("um", "uh", an isolated "like" / "you know") are dropped with
-   `breath` of air on each side, but never when that leaves a fragment shorter
-   than `min_fragment`: a stutter of joins is worse than an "um". A pause is
+   Filler words ("um", "uh", an isolated "like" / "you know") are dropped from
+   the pause before them to the pause after them (paragraph 4; with `breath` of
+   air on each side of the word when no audio was checked), but never when that
+   leaves a fragment shorter than `min_fragment`: a stutter of joins is worse
+   than an "um". A pause is
    where the AUDIO is silent (ffmpeg's silencedetect, silence.py), not where
    whisper has no word: every silent stretch longer than `max_silence` between
    two pieces of speech is shortened to `keep_pause` by cutting its middle, and
@@ -64,11 +66,39 @@ timings (words.py), so it is testable with synthetic data:
    Voiced audio is never cut: every cut lies inside a detected silence with
    `keep_pause / 2` (or `lead` / `tail` at the moment's edges) of that silence
    kept on each side, which covers a word edge that fades below the detector's
-   threshold. Filler cuts measure their breath from the same acoustic edges.
+   threshold.
+
+4. Why a filler cut is anchored to silence, not to the filler's timestamps
+   (`_anchored_filler_cuts`, `anchor_edges`). The fourth reel's verifier scanned
+   the audio at all 86 segment edges: 11 had speech above -25 dB on both sides,
+   nine of them filler cuts. Whisper's timing for an "uh" is off by 50-150 ms,
+   so "the word edge plus 0.15 s of breath" lands inside the filler or inside
+   the neighbouring word (talk2 374.54: the join sat in "Uh," at -1 dB). The
+   audio is the anchor instead: a filler is the voiced blob between the pause
+   (a detected silence of at least `MIN_PAUSE`) that ends just before it and
+   the pause that begins just after it, each within `FILLER_REACH` of the
+   filler's acoustic edges; the cut runs from `keep_pause / 2` into the first
+   pause to `keep_pause / 2` before the end of the second, so the join is a
+   pause and never a splice of sound. When one side has no pause (the speaker
+   said "Uh, it's just..." in one breath, which is how most fillers are said)
+   the filler stays and is counted as embedded: leaving an "uh" in is a lesser
+   fault than a cut through a word. A blob that per whisper also holds a kept
+   word (the midpoint of a non-filler lies inside it) is not a filler blob and
+   stays too. The moment's own start and end follow the same rule: a start
+   moves to `lead` before the end of the pause nearest the first word (within
+   `EDGE_REACH`; earlier when whisper timed the word late, later when it timed
+   it early) and an end to `tail` after the start of the pause nearest the last
+   word, provided the neighbouring word does not lie past that pause (`WORD_SLOP`
+   is the timing error a neighbour may overlap by). Without a pause within reach
+   the edge stays on the word boundary and the audit (audit.py) reports it: the
+   speaker ran two sentences together and no clean cut exists there. Without
+   silence data at all (`silences=None`, ffmpeg unavailable) the word-edge rule
+   of paragraph 2 is the only option and is kept.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
@@ -100,6 +130,17 @@ WORD_MARGIN = 0.05  # lead/tail air stops this far short of a neighbouring word
 # must keep VOICED_MARGIN of sound beside a silence for that silence to count as a pause.
 RUN_GAP = 0.05
 VOICED_MARGIN = 0.12
+# Anchors (module docstring, 4). A pause is a detected silence of at least MIN_PAUSE (mono, -35 dB;
+# the CLI detects at this floor and tighten applies max_silence for what is worth shortening).
+MIN_PAUSE = 0.12
+FILLER_REACH = 0.35  # a filler's flanking pauses must end / begin within this of its acoustic edges
+EDGE_REACH = 0.8  # a moment's first / last word looks this far for the pause beside it (whisper put a
+# zero-length "So" 0.68 s after the sound began on talk2, so 0.5 s was not enough)
+WORD_SLOP = 0.15  # whisper's usual timing error: a neighbouring word may overlap an anchor by this much
+ONSET_SLOP = 0.05  # a pause that begins further than this into a word is a stop closure inside the word
+# ("crea-t-ing" holds a 0.13 s silence at -35 dB), not the pause before it; likewise one that ends
+# further than this before a word's end. A pause of MIN_PAUSE still covers a start whisper timed up to
+# MIN_PAUSE + ONSET_SLOP early, because the pause then began before the timestamp.
 _EPS = 1e-6
 
 _TERMINAL = re.compile(r"[.!?]+[\"'”’)\]]*$")
@@ -346,9 +387,15 @@ class WordSnapper:
         return ws[i].start, ws[j].end
 
     def neighbours(self, start: float, end: float) -> tuple[Word | None, Word | None]:
-        """The last word ending at or before `start` and the first starting at or after `end`."""
+        """The last word ending at or before `start` and the first starting at or after `end`.
+
+        A word that starts at `start` is the moment's own first word, not a
+        neighbour, even when it is zero-length and so also ends there: whisper
+        pins its zero-length words to the next word's start (talk2's "So" at
+        371.91), and treating one as the previous word clamped the lead air away
+        and opened the clip on the word itself."""
         ws = self.words
-        i = bisect_right(self._starts, start + _EPS) - 1
+        i = bisect_left(self._starts, start - _EPS) - 1  # last word starting before `start`
         while i >= 0 and ws[i].end > start + _EPS:
             i -= 1
         j = bisect_left(self._starts, end - _EPS)
@@ -423,6 +470,7 @@ class CutReport:
     silence_seconds: float = 0.0  # pauses shortened (word gaps, or detected silence without words)
     intact: bool = False  # a guardrail kept the moment whole
     note: str = ""
+    embedded: int = 0  # filler words kept: the audio shows no pause beside them to cut in (docstring, 4)
 
     @property
     def removed_seconds(self) -> float:
@@ -536,6 +584,97 @@ def _filler_cuts(inside: list[Word], mask: list[bool], start: float, end: float,
     return _merge(raw)
 
 
+def _nearest_pause(silences: list[tuple[float, float]], at: float, reach: float, *, edge: int,
+                   ok=lambda s, e: True) -> tuple[float, float] | None:
+    """The detected silence whose `edge` (0: start, 1: end) lies nearest `at`,
+    within `reach`, and satisfies `ok(s, e)`; None when there is none."""
+    cands = [(s, e) for s, e in silences if abs((s, e)[edge] - at) <= reach + _EPS and ok(s, e)]
+    return min(cands, key=lambda se: abs(se[edge] - at)) if cands else None
+
+
+def _anchored_filler_cuts(inside: list[Word], mask: list[bool], edges: list[tuple[float, float]], start: float,
+                          end: float, silences: list[tuple[float, float]], keep_pause: float, lead: float,
+                          tail: float) -> tuple[list[tuple[float, float]], int]:
+    """Filler cuts anchored to the pauses around each run of fillers (module
+    docstring, 4): (cuts, number of filler words kept as embedded). `edges` are
+    the words' acoustic edges (`_acoustic_edges`), so a filler whisper stretched
+    over the pause before it still finds that pause; `silences` are merged."""
+    half = keep_pause / 2
+    kept_mid = [(w.start + w.end) / 2 for w, f in zip(inside, mask) if not f]
+    raw: list[tuple[float, float]] = []
+    embedded = 0
+    i = 0
+    while i < len(inside):
+        if not mask[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(inside) and mask[j + 1]:
+            j += 1
+        a0, b0 = edges[i][0], edges[j][1]
+        mid = (a0 + b0) / 2
+        # The pause before must reach the previous kept word's end and the pause after must begin
+        # by the next kept word's start (ONSET_SLOP each): a silence deeper inside a neighbour is a
+        # stop closure in that word, and cutting from it would take the word's first or last syllable.
+        floor = inside[i - 1].end - ONSET_SLOP if i > 0 else -math.inf
+        ceiling = inside[j + 1].start + ONSET_SLOP if j + 1 < len(inside) else math.inf
+        before = _nearest_pause(silences, a0, FILLER_REACH, edge=1, ok=lambda s, e: floor - _EPS <= e <= mid + _EPS)
+        after = _nearest_pause(silences, b0, FILLER_REACH, edge=0, ok=lambda s, e: mid - _EPS <= s <= ceiling + _EPS)
+        cut = None
+        if before is not None and after is not None and not any(before[1] < m < after[0] for m in kept_mid):
+            (sb, eb), (sa, ea) = before, after
+            a = start if sb <= start + _EPS else min(sb + half, eb)
+            b = end if ea >= end - _EPS else max(ea - half, sa)
+            if a <= start + _EPS and b < end - _EPS:
+                b = max(ea - lead, sa)  # the clip opens on this join: `lead` of air before the first word
+            if b >= end - _EPS and a > start + _EPS:
+                a = min(sb + tail, eb)  # ...or closes on it: `tail` of air after the last word
+            if b - a >= MIN_CUT:
+                cut = (a, b)
+        if cut is None:
+            embedded += j - i + 1
+        else:
+            raw.append(cut)
+        i = j + 1
+    return _merge(raw), embedded
+
+
+def anchor_edges(
+    start: float, end: float, first: float, last: float, silences: list[tuple[float, float]], *,
+    prev: Word | None = None, nxt: Word | None = None, lead: float = LEAD_SECONDS, tail: float = TAIL_SECONDS,
+    reach: float = EDGE_REACH, duration: float | None = None,
+) -> tuple[float, float]:
+    """The padded span [start, end] of a moment whose speech runs from `first`
+    (its first word's start) to `last` (its last word's end), moved onto the
+    pauses the audio shows beside those words (module docstring, 4).
+
+    The start becomes `lead` before the end of the pause nearest `first` (all of
+    a shorter pause), when that pause begins no later than `ONSET_SLOP` into the
+    word (later: a stop closure inside the word, "crea-t-ing") and the previous
+    word `prev` ends no more than `WORD_SLOP` past its end (later: the sound
+    after the pause is that word, not ours); the end becomes `tail` after the
+    start of the pause nearest `last` under the mirror conditions with `nxt`. A
+    pause further than `reach` from the word, or one that fails those tests,
+    leaves the edge where `WordSnapper.pad` put it. `silences` may reach outside
+    [start, end]; the result may too, by design."""
+    sil = _merge(list(silences))
+    before = _nearest_pause(
+        sil, first, reach, edge=1,
+        ok=lambda s, e: s <= first + ONSET_SLOP + _EPS and (prev is None or prev.end <= e + WORD_SLOP + _EPS),
+    )
+    if before is not None:
+        start = max(0.0, max(before[1] - lead, before[0]))
+    after = _nearest_pause(
+        sil, last, reach, edge=0,
+        ok=lambda s, e: e >= last - ONSET_SLOP - _EPS and (nxt is None or nxt.start >= s - WORD_SLOP - _EPS),
+    )
+    if after is not None:
+        end = min(after[0] + tail, after[1])
+        if duration is not None:
+            end = min(end, duration)
+    return start, end
+
+
 def _silence_cuts(silences: list[tuple[float, float]], start: float, end: float, max_silence: float,
                   breath: float) -> list[tuple[float, float]]:
     """Silence path (no timed words): a detected silence longer than `max_silence` is
@@ -614,10 +753,15 @@ def _pause_cuts(speech: list[tuple[float, float]], silences: list[tuple[float, f
                 end: float, max_silence: float, keep_pause: float, lead: float, tail: float) -> list[tuple[float, float]]:
     """Word path: the middle of every silent stretch longer than `max_silence` between
     two pieces of `speech`, leaving `keep_pause`; at the moment's own edges, the
-    silence beyond `lead` (before the first speech) or `tail` (after the last). A
+    silence beyond `lead` (before the first sound) or `tail` (after the last). A
     stretch is the whole gap when the audio was not checked (`silences is None`),
     else the gap's overlap with each detected silence, so a cut never crosses
-    sound and never reaches into speech (module docstring, 2 and 3)."""
+    sound and never reaches into speech (module docstring, 2 and 3). Sound
+    between the last word and the silence after it is the word's own tail as
+    far as the edge is concerned (whisper timed "good?" 0.2 s short on talk2;
+    `anchor_edges` placed the end `tail` into that silence, and trimming it to
+    less put the cut 20 ms before a click), so the edges keep `lead` / `tail`
+    whatever lies between the speech and the silence."""
     half = keep_pause / 2
     out: list[tuple[float, float]] = []
     for g0, g1 in _fragments(start, end, speech):
@@ -629,10 +773,10 @@ def _pause_cuts(speech: list[tuple[float, float]], silences: list[tuple[float, f
             at_head, at_tail = s <= start + _EPS, e >= end - _EPS
             if at_head and at_tail:
                 continue  # the whole moment is silent: the removal cap's problem, not ours
-            if at_head:  # trim the opening to `lead` before the speech (or `half` before other sound)
-                a, b = start, e - (lead if e >= g1 - _EPS else half)
+            if at_head:  # trim the opening to `lead` before the sound
+                a, b = start, e - lead
             elif at_tail:
-                a, b = s + (tail if s <= g0 + _EPS else half), end
+                a, b = s + tail, end
             elif e - s > max_silence + _EPS:
                 a, b = s + half, e - half
             else:
@@ -665,9 +809,13 @@ def tighten(
     the speech is where the words are, less the silences the audio finds inside
     them (`speech_spans`); a pause is a silence between two pieces of speech
     (or the bare word gap when there is no silence data), and `lead` / `tail`
-    say how much silence the moment's own edges keep. Without timed words the
-    silences are the only pauses known and are cut the old way. `fillers=False`
-    keeps every word; `pauses=False` keeps every gap.
+    say how much silence the moment's own edges keep. With silence data a
+    filler is cut from pause to pause (`_anchored_filler_cuts`), so `silences`
+    should hold every silence of at least `MIN_PAUSE`; a filler with no pause
+    on one side stays and is counted in `CutReport.embedded`. Without silence
+    data fillers are cut at their word edges with `breath` of air. Without
+    timed words the silences are the only pauses known and are cut the old way.
+    `fillers=False` keeps every word; `pauses=False` keeps every gap.
     """
     whole = ((start, end),)
     if end <= start:
@@ -678,8 +826,14 @@ def tighten(
     speech = speech_spans(inside, silences if pauses else None)
     edges = _acoustic_edges(inside, speech)
     kept = [edges[i] for i, f in enumerate(mask) if not f]
+    sil = _merge(list(silences)) if silences else []
 
-    free = _filler_cuts(inside, mask, start, end, breath, edges) if fillers else []  # may be cancelled for a fragment
+    free: list[tuple[float, float]] = []  # may be cancelled for a fragment
+    embedded = 0
+    if fillers and silences is None:
+        free = _filler_cuts(inside, mask, start, end, breath, edges)
+    elif fillers:
+        free, embedded = _anchored_filler_cuts(inside, mask, edges, start, end, sil, keep_pause, lead, tail)
     gap_cuts: list[tuple[float, float]] = []  # never cancelled: no speech in them
     if pauses and inside:
         gap_cuts = _pause_cuts(speech, silences, start, end, max_silence, keep_pause, lead, tail)
@@ -687,19 +841,23 @@ def tighten(
         free += _silence_cuts(silences or [], start, end, max_silence, breath)
     removals = _protect_fragments(start, end, free, gap_cuts, kept, min_fragment)
     if not removals:
-        return CutReport(whole)
+        return CutReport(whole, embedded=embedded)
     while len(_fragments(start, end, removals)) > MAX_SEGMENTS:
         removals.remove(min(removals, key=lambda r: r[1] - r[0]))
 
     removed = sum(b - a for a, b in removals)
-    # The cap guards speech: a filler cut, or a pause cut made on word gaps alone, may hold a stretch
-    # whisper did not transcribe; a pause cut the audio confirmed holds nothing but silence and is exempt.
-    risky = removed if silences is None else _overlap_seconds(removals, _merge(free))
+    # The cap guards speech: what a cut removes that the audio does not confirm as silence may be a
+    # stretch whisper did not transcribe; confirmed silence holds nothing and is exempt. Without silence
+    # data every removed second counts.
+    risky = removed if silences is None else sum(_voiced(a, b, sil) for a, b in removals)
     share = risky / (end - start)
     if share > max_removed:
         return CutReport(whole, intact=True,
                          note=f"cuts would remove {share:.0%} of the moment (limit {max_removed:.0%}); kept intact "
                               "(long dead air, or speech whisper did not transcribe: shorten the moment or check the audio)")
-    gone = [w for w, f in zip(inside, mask) if f and any(a < (w.start + w.end) / 2 < b for a, b in removals)]
-    filler_seconds = min(sum(w.duration for w in gone), removed)
-    return CutReport(tuple(_fragments(start, end, removals)), len(gone), filler_seconds, removed - filler_seconds)
+    # A filler is gone when the middle of its SOUND lies in a removal: whisper's span for an "uh," can
+    # stretch 1.5 s over the pause before it, and shortening that pause does not remove the "uh".
+    gone = [e for e, f in zip(edges, mask) if f and any(a < (e[0] + e[1]) / 2 < b for a, b in removals)]
+    filler_seconds = min(sum(e[1] - e[0] for e in gone), removed)
+    return CutReport(tuple(_fragments(start, end, removals)), len(gone), filler_seconds, removed - filler_seconds,
+                     embedded=embedded)

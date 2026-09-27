@@ -25,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import audit as auditmod
 from . import captions as cap
 from . import cuts
 from . import framing as framingmod
@@ -170,17 +171,22 @@ def _hms(t: float) -> str:
     return f"{h:d}:{m:02d}:{s + (t - int(t)):04.1f}"
 
 
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
 def _cut_summary(rep: cuts.CutReport) -> str:
     if rep.intact:
         return rep.note
+    kept = f"; {_plural(rep.embedded, 'filler')} kept (no pause beside {'it' if rep.embedded == 1 else 'them'})" if rep.embedded else ""
     if not rep.removed_seconds:
-        return "nothing to cut"
+        return "nothing to cut" + kept
     parts = []
     if rep.fillers:
-        parts.append(f"{rep.fillers} filler{'s' if rep.fillers != 1 else ''}")
+        parts.append(_plural(rep.fillers, "filler"))
     if rep.silence_seconds:
         parts.append(f"{rep.silence_seconds:.1f} s silence")
-    return f"-{rep.removed_seconds:.1f} s ({', '.join(parts)}) -> {len(rep.segments)} segment{'s' if len(rep.segments) != 1 else ''}"
+    return f"-{rep.removed_seconds:.1f} s ({', '.join(parts)}) -> {_plural(len(rep.segments), 'segment')}{kept}"
 
 
 def cmd_reel(a: argparse.Namespace) -> int:
@@ -237,11 +243,14 @@ def cmd_reel(a: argparse.Namespace) -> int:
 
     # Lead/tail air, then filler + pause removal (cuts.py). A pause is a gap between words that
     # the audio confirms is silent (silence.py); without word timings the audio is all there is.
+    # Every silence of at least cuts.MIN_PAUSE is collected (fillers and the moments' edges anchor
+    # to those; --max-silence decides which are shortened), out past the moments' edges so the pause
+    # beside a first or last word is seen whole (reel.detection_spans).
     silences: list[list[tuple[float, float]]] | None = None  # None: audio not checked
     if not a.keep_fillers:
-        spans_padded = [cuts.pad(m.start, m.end, a.lead_seconds, a.tail_seconds, info.duration_seconds) for m in moments]
+        spans = reelmod.detection_spans(moments, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds)
         try:
-            silences = silence.detect_silences(info.path, spans_padded, min_seconds=a.max_silence)
+            silences = silence.detect_silences(info.path, spans, min_seconds=min(cuts.MIN_PAUSE, a.max_silence))
         except RuntimeError as e:
             print(f"cuts: silence detection skipped ({e}); "
                   + ("pauses follow the word timing alone" if words else "pauses are kept"), file=sys.stderr)
@@ -298,8 +307,11 @@ def cmd_reel(a: argparse.Namespace) -> int:
     cut_line = ""
     if reports:
         fillers = sum(r.fillers for r in reports)
+        embedded = sum(r.embedded for r in reports)
         sil = sum(r.silence_seconds for r in reports)
         cut_line = f"; cuts removed {removed:.1f} s ({fillers} fillers, {sil:.1f} s silence)"
+        if embedded:
+            cut_line += f"; {_plural(embedded, 'filler')} kept: no pause beside {'it' if embedded == 1 else 'them'} to cut in"
     if a.minutes is None and how.startswith("--moments"):
         print(f"reel: {len(moments)} moments via {how}; runtime {shown} incl. all cards{cut_line} "
               "(length follows your moments; pass --minutes for a ±20% target check)")
@@ -313,6 +325,16 @@ def cmd_reel(a: argparse.Namespace) -> int:
     if a.render:
         return render(out_path)
     return 0
+
+
+def cmd_audit_plan(a: argparse.Namespace) -> int:
+    """Measure the audio on both sides of every segment edge (audit.py). Exit 1
+    when any edge has speech on both sides, so the check works in a script."""
+    plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
+    words = wordsmod.load_words(a.words) if a.words else None
+    readings = auditmod.audit_plan(plan, a.audio, window=a.window_ms / 1000.0, words=words)
+    print(auditmod.report(readings, threshold_db=a.threshold_db, window=a.window_ms / 1000.0, show_all=a.all))
+    return 1 if auditmod.offenders(readings, a.threshold_db) else 0
 
 
 def render(plan_path: Path) -> int:
@@ -426,6 +448,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="music bed under the cards (audio file you have the rights to; see contract/README.md)")
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)
+
+    pa = sub.add_parser("audit-plan", help="measure the audio on both sides of every segment edge of a plan")
+    pa.add_argument("plan", help="edit plan JSON (clipbot reel --out)")
+    pa.add_argument("--audio", required=True,
+                    help="the source's audio: a 16-bit PCM WAV is read directly, anything else is decoded with ffmpeg")
+    pa.add_argument("--words", default=None, help="word timings JSON, to name the word whisper puts at an offending edge")
+    pa.add_argument("--threshold-db", type=float, default=auditmod.SPEECH_DB,
+                    help=f"peak above this on both sides of an edge = the cut runs through sound (default {auditmod.SPEECH_DB:g})")
+    pa.add_argument("--window-ms", type=float, default=auditmod.WINDOW * 1000,
+                    help=f"milliseconds measured on each side (default {auditmod.WINDOW * 1000:g})")
+    pa.add_argument("--all", action="store_true", help="print every edge, not only the offenders")
+    pa.set_defaults(fn=cmd_audit_plan)
 
     a = p.parse_args(argv)
     tool_environment()
