@@ -130,12 +130,13 @@ No byte-size target is promised.
 Before publishing, the renderer checks stream counts, geometry, every video
 frame timestamp, audio channel count/start/duration, total duration and a full
 decode with FFmpeg `-xerror`. Source size/mtime is checked again before publishing.
-Frame probing decodes the source and reordered split/interleave graphs can retain
-many frames in memory; very long/high-resolution plans need adequate RAM and disk.
+Frame probing decodes the whole source once (streaming, about 100 MB); each clip
+is then rendered in parts of at most 20 s of source so that its peak memory does
+not depend on the plan (see [Clip rendering in parts](#clip-rendering-in-parts)).
 The timeout bounds process time, not memory consumption.
 
-For MP4-family sources (`mov,mp4,m4a,3gp,3g2,mj2`) each clip's encoder reads only
-the window it needs: an input `-ss` at the midpoint between the last unwanted and
+For MP4-family sources (`mov,mp4,m4a,3gp,3g2,mj2`) each encode reads only the
+window it needs: an input `-ss` at the midpoint between the last unwanted and
 the first wanted frame, never later than the earliest segment start, and `-t`
 ending one second after the last selected sample. With `-copyts` every timestamp
 is untouched; the demuxer lands on the last keyframe at or before the point and
@@ -144,7 +145,82 @@ trims and the audio sample indices are simply re-based to the seek point and the
 verification above is unchanged. Without this, a 79-minute 1080p session costs
 about five minutes of decoding per clip on an 8-core ARM box. Other containers
 (Matroska's millisecond timestamps, formats without a keyframe index) keep the
-full decode.
+full decode, once per part.
+
+## Clip rendering in parts
+
+A clip is rendered one part at a time and the parts are joined without re-encoding.
+Why: the single filter graph that rendered a clip before (`split`, one `trim` per
+segment, `interleave`) looked like a streaming pipeline but was not. `interleave`
+emits a frame only once every one of its inputs holds one, and the input for the last
+segment holds nothing until the decoder reaches that segment, so every decoded frame
+of every earlier segment waited in memory. A 37 s, four-segment 1080p24 clip from the
+79-minute recording was killed by the kernel at 2.2 GB (`anon-rss:2228316kB`), twice,
+on a box with 2.7 GB free, and the peak grew with the source window a clip covered,
+not with the seconds it kept.
+
+`cliprender.renderer.parts` cuts each segment into parts of at most `MAX_PART_SECONDS`
+(20 s) of source, at the presentation time of a source frame, so `bisect_left` names a
+part's frames exactly as it names a segment's. Each part is one FFmpeg process: the
+input seek just before its first frame (`decode_window`, as before), `trim` by frame
+index, `setpts` with the same constant the single graph used (`origin + start - offset`,
+so the part file carries the clip's final timestamps; written as an exact microsecond
+count because FFmpeg truncates the floating-point `seconds/TB` division, and on FFmpeg 4.4
+a part's first frame that is one microsecond short lands a whole millisecond early through
+the millisecond edit list that delays it), the geometry filters,
+the clip's captions, and the same H.264 settings for every part (`Session.encoder_flags`:
+CRF 18 veryfast, `-bf 0`, microsecond time bases, hence identical parameter sets and
+closed GOPs). Nothing in that pipeline holds more than the decoder's and encoder's own
+working set, whatever the plan.
+
+Audio is rendered once per clip, without video (`render_audio`): the sample-exact graph
+that always cut the segments at sample boundaries and joined them is unchanged, now
+writing a float WAV whose sample count is checked against the plan before the join.
+Why not AAC per part: every AAC file carries encoder priming and a padded last frame,
+so stream-copying AAC pieces together opens gaps at the joins; the float WAV is
+lossless and the clip's AAC is encoded once from it, from the same samples the single
+graph fed its encoder.
+
+The join is the concat demuxer with the video stream copied (`-c:v copy`,
+`-auto_convert 0` so the parameter sets are not rewritten in-band) and the WAV encoded
+to AAC. The demuxer adds `start_time - inpoint` to every packet of a file, where
+`start_time` is the sum of the previous files' `duration`s; by default `inpoint` is the
+file's own first timestamp, which would move each part to the end of the previous one
+and discard its lead-in. `concat_list` therefore declares every file's `duration` (the
+distance to the next part's output offset, in microseconds) and an `inpoint` equal to
+its own offset, so the two sums agree and the demuxer adds exactly zero. The declared
+durations also keep the demuxer from trusting the containers' lengths (millisecond
+rounding on FFmpeg 4.4, a guessed last-frame duration). The last frame's duration is
+pinned again at the join (`setts`, FFmpeg 5.0+ as for the encodes): an MP4 demuxer derives
+a file's last packet duration from the stream duration, which excludes the edit list that
+delays the first frame, so for a part that starts late in the clip it comes out zero and
+the muxer would otherwise guess it from the average frame rate (0.3 s instead of 0.1 s on
+the variable-rate fixture). Interior frames are unaffected, their durations being re-derived
+from the next frame's timestamp. Verification is unchanged and runs on the joined file:
+every frame timestamp against the plan, audio start and length, a full decode. The part
+workspace is deleted after each clip's join.
+
+Captions do not change at a part boundary: the cues are retimed and word-trimmed once
+for the whole clip against the plan's real cuts, and every part burns that one SRT
+against the clip's own timestamps. This matters more than it looks: the `subtitles`
+filter converts a frame's timestamp to milliseconds in floating point and truncates, so
+a cue edge that falls exactly on a frame time can flip between shown and hidden when
+the absolute timestamps differ by a single microsecond. Part-relative timestamps
+would have made that flip possible at every boundary; identical timestamps make the
+edge decisions identical too, and the test suite compares a split render with an
+unsplit one frame by frame.
+
+Measured on the 8-core ARM box (FFmpeg 7.0.2) with clip-01 of the Talk #2 plan (1080p24,
+four segments, 34.98 s kept over a 37.4 s window, burned captions), polling the RSS of
+every process every 0.2 s: before, the clip encode reached 1759 MB within two seconds
+of starting and was stopped by the measurement's 1.7 GB guard (the kernel had killed
+the same render at 2.2 GB); after, the largest process peaked at 444 MB (a part
+encode; the audio pass 30 MB, the join 30 MB, verification 104 MB) and the clip took
+about 14 s after the frame probe (audio 0.2 s, parts 3.0 + 0.2 + 2.5 + 2.4 s, join
+1.6 s, verification 2.2 s). One side effect on FFmpeg 4.4.2: `interleave` is no longer
+used, so the four multi-segment fixtures that its last-frame drop failed now pass
+there; 4.4's one remaining known failure is the sub-tick test's 0.1 ms precision, a
+muxer limit unrelated to this change.
 
 ## Reel assembly (v1.1)
 
@@ -274,6 +350,8 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
     comes out one frame short and fails verification (four fixtures: adjacent half-open ranges,
     delayed audio origin, variable frame rate, reordered sidecar cues). Single-segment clips are
     unaffected. Not worked around; use 7.0.2 for plans with several segments per clip.
+    *(Superseded on 2026-09-26: clips are rendered in parts and joined without `interleave`,
+    and those four fixtures pass on 4.4.2; see [Clip rendering in parts](#clip-rendering-in-parts).)*
   - Without `-movie_timescale` the MP4 edit list that delays a clip's first frame is written in
     the default millisecond movie timescale, so the video track lands up to 1 ms early whenever
     a segment does not start exactly on a frame (most transcript-derived starts). Frame spacing
@@ -408,6 +486,42 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
 - **Acceptance**: `contract/examples/one-clip-trim.json` (clip starts 2 s into the 4 s cue
   "Okay, this is a") renders 28.000 s as before; the frame at 0.5 s now burns "is a" instead of
   "Okay, this is a", and the frame at 2.5 s shows the untouched second cue.
+
+### Changes on 2026-09-26 (Kyle's agent): clips rendered in parts, memory bounded — for Ramsey's review
+
+- **Why**: rendering one clip (37 s of source, four segments, 1080p24, burned captions) from
+  the Talk #2 recording was killed by the kernel twice at 2.2 GB anonymous RSS on an 8-core
+  ARM box with 2.7 GB free; the same plan had rendered earlier with 6 GB free. The clip graph
+  (`split` → `trim` per segment → `interleave`) buffered every decoded frame of all but the last
+  segment until the decoder reached that segment, so peak memory was proportional to the source
+  window a clip covered. A 4-minute reel from a 79-minute recording must render with 2 GB free.
+- **What** (`cliprender/renderer.py`, see [Clip rendering in parts](#clip-rendering-in-parts)):
+  `parts` cuts segments into parts of at most 20 s at exact frame boundaries; `video_graph`
+  encodes each part on its own with the clip's output timestamps and captions; `audio_graph`
+  (the previous audio half of the graph, unchanged) renders the clip's audio once to a float
+  WAV whose sample count is checked; `concat_list` and the concat demuxer join the parts by
+  stream copy with the demuxer adding exactly zero to every timestamp (`inpoint` equal to each
+  file's offset, explicit `duration`s), and the AAC is encoded once at the join. `Session`
+  bundles what every clip shares; `verify` and the transactional publication are untouched and
+  run on the joined file. `filter_graph` is gone; its text survives in `tests/test_parts.py` as
+  the reference the new pipeline is compared against.
+- **Measured** (FFmpeg 7.0.2, RSS polled every 0.2 s while rendering clip-01 of the Talk #2 plan):
+  before 1759 MB and climbing when the measurement's 1.7 GB guard stopped it (the kernel had
+  killed the same render at 2.2 GB earlier that evening); after 444 MB peak for the largest
+  process, 517 MB for the whole
+  process tree, about 14 s for the clip after the frame probe. Output identical to the plan:
+  842 frames, 35.008 s of video (34.98 s kept plus the last frame's display time), 34.980 s
+  of audio.
+- **Tests** (`tests/test_parts.py`, renderer suite 140 → 149 on FFmpeg 7.0.2; 4.4.2 goes from
+  135 passed / 5 failed to 147 passed / 1 skipped / 1 failed, the four `interleave` failures
+  gone): cuts at frame boundaries (45 s → 3 parts, exactly 20 s untouched, 20.1 s → 2 parts,
+  variable frame rate and a nonzero origin); the concat list's inpoint/duration arithmetic;
+  a real 45 s segment rendered in three parts with every frame and three audio pulses across
+  the cuts checked; a reordered, repeated three-segment clip compared with the legacy
+  single-graph render (frame timestamps within a microsecond, the same luminance, audio within
+  1 ms, the same end; skipped on 4.4 where the legacy graph itself drops a frame); a part
+  boundary inside a cue leaves burned and sidecar captions identical; a failed join publishes
+  nothing.
 
 ## Card text fit
 
