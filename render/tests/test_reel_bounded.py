@@ -96,6 +96,7 @@ def legacy(tmp_path, plan_path, output):
 # The fixture reel (see test_reel_music): intro 4, opening 5, chapter card 3, clip A 5, clip B 5,
 # closing 6 and outro 3 seconds at 10 fps; a dissolve shortens every join by 0.4 s.
 DURATIONS = [4, 5, 3, 5, 5, 6, 3]
+CARDS = [True, True, True, False, False, True, True]
 
 
 def interior(samples, start, end, margin=0.5):
@@ -124,10 +125,12 @@ def test_pieces_reproduce_the_single_graph_reel(tmp_path, talk, timing_flags, tr
         near_join = any(abs(index - join) <= 3 for join in joins)
         assert abs(a - b) <= (20 if transition == "dip" and near_join else 1.5), index
     # Audio: exactly the samples of the timeline (the decode pads to a whole AAC frame). The
-    # single graph ran up to about 20 ms long per card, for the same reason as the frame.
+    # single graph's length depended on the FFmpeg build: its card silences ran about 13 ms
+    # long each on 7.0.2 (64 ms over 31 s) and its `concat` ended 107 ms early on 4.4.2. The
+    # pieces are exact on both, so the reference is allowed the slop it had, 25 ms per card.
     new_audio, old_audio = audio(new), audio(old)
     assert 0 <= len(new_audio) - round(seconds * RATE) < 1024
-    assert 0 <= len(old_audio) - len(new_audio) <= 5 * RATE // 40
+    assert abs(len(old_audio) - len(new_audio)) <= sum(CARDS) * RATE // 40
     # Inside every piece, half a second in from its ends, the same levels: the bed under the
     # card runs only (its loud and quiet halves where the running offset puts them), speech in
     # the clips, and the silent second inside each clip still silent.

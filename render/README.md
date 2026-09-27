@@ -580,16 +580,18 @@ task, subjective speech/lip-sync review, or successful runs on macOS/Pi/Linux.
   real run at 2.2 GB); after, 512 MB peak for the largest process (a 1080p piece conform),
   572 MB for the whole process tree, 110 s wall for the whole reel step, 7076 frames,
   294.833 s of video and audio, verification passed.
-- **Tests** (renderer suite 149 → 158 on FFmpeg 7.0.2, all reel tests also green on 4.4.2):
+- **Tests** (renderer suite 149 → 158 on FFmpeg 7.0.2; on 4.4.2 156 passed, 1 skipped and the
+  one pre-existing sub-tick muxer failure, every reel test green):
   `tests/test_reel_style.py` pins the piece, bridge, bed and mix graphs, the frame grid and
   the WAV join; `tests/test_reel_bounded.py` renders the music fixture reel with cut, dip and
   dissolve and asserts that no reel-step command has more than three `-i` (and that the widest
   mix, `under: all`, has exactly three), then assembles the same reel with the legacy graph
-  and compares: the pieces give exactly the timeline's frames and samples where the single
-  graph ran one frame and up to 20 ms per card long (its card silence outlasting the card),
-  every frame's luminance matches within 1.5 except a dip's fade ramp meeting that drift,
-  and every piece's interior has the same music and speech levels. The existing music,
-  transition, style and reel tests pass unchanged.
+  and compares: the pieces give exactly the timeline's frames and samples on both builds,
+  where the single graph's length depended on the build (one frame and 64 ms long on 7.0.2,
+  its card silences outlasting the cards; 107 ms short on 4.4.2), every frame's luminance
+  matches within 1.5 except a dip's fade ramp meeting that drift, and every piece's interior
+  has the same music and speech levels. The existing music, transition, style and reel tests
+  pass unchanged.
 
 ## Card text fit
 
