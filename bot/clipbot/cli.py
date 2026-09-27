@@ -10,7 +10,8 @@ Captions come from the source's subtitle stream, `--srt FILE`, or
 `--transcribe` (faster-whisper; needs `--extra whisper`). `--speakers gemini.txt`
 labels unlabelled cues from a Gemini transcript (speakers.py). Word timings
 (`--words FILE`, or the `.words.json` that `--transcribe` writes) let `reel` cut
-fillers and long pauses without ever clipping a word (cuts.py).
+fillers and long pauses without ever clipping a word (cuts.py). `--framing FILE`
+sets every card around the moments from one JSON file (framing.py).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from . import captions as cap
 from . import cuts
+from . import framing as framingmod
 from . import llm
 from . import outline as outl
 from . import plan as planmod
@@ -259,6 +261,11 @@ def cmd_reel(a: argparse.Namespace) -> int:
         given = Path(a.takeaways).read_text(encoding="utf-8").splitlines()
     takeaways = reelmod.takeaway_lines(moments, cues, given=given, hand_picked=hand_picked)
 
+    # --framing FILE (framing.py) overrides the flags below wherever it says something; the
+    # card seconds it sets are in place before the runtime line is computed.
+    framing = framingmod.load_framing(a.framing) if a.framing else None
+    if framing and not a.music and (framing.music_gain_db is not None or framing.music_fade_seconds is not None):
+        print(f"framing: music settings in {a.framing} ignored (no --music)", file=sys.stderr)
     title = a.title or Path(a.source).stem
     date = a.date or datetime.date.fromtimestamp(Path(a.source).stat().st_mtime).isoformat()
     summary_path = out_dir / "summary.md"
@@ -266,9 +273,10 @@ def cmd_reel(a: argparse.Namespace) -> int:
         info, moments, out_dir=str(out_dir), title=title, date=date, preset=a.preset,
         captions_kind=captions_kind, srt_path=srt_path, summary_path=str(summary_path),
         lead=a.lead_seconds, tail=a.tail_seconds, takeaways=takeaways, transition=a.transition,
-        music=planmod.contract_path(a.music) if a.music else None,
+        music=planmod.contract_path(a.music) if a.music else None, framing=framing,
     )
     planmod.validate(plan)
+    title = plan["output"]["reel"]["intro"]["title"]  # what the viewer sees, framing applied
     out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     moments_path = out_dir / "moments.json"
     moments_path.write_text(json.dumps([m.spec() for m in moments], indent=2) + "\n", encoding="utf-8")
@@ -398,6 +406,10 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--date", default=None, help="'Recorded' date on the intro (default: source file date)")
     pr.add_argument("--takeaways", default=None,
                     help="text file, one takeaway per line, for the closing cards (default: the moments' lessons)")
+    pr.add_argument("--framing", default=None,
+                    help="JSON {title, date, what_you_will_learn, takeaways, outro, *_seconds, music_gain_db, "
+                         "music_fade_seconds, transition}: the cards around the moments, overriding the flags "
+                         "(clipbot/framing.py)")
     pr.add_argument("--keep-fillers", action="store_true",
                     help="do not cut filler words or long pauses inside moments")
     pr.add_argument("--max-silence", type=float, default=cuts.MAX_SILENCE,

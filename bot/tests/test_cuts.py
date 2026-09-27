@@ -2,6 +2,8 @@ import pytest
 
 from clipbot.captions import Cue
 from clipbot.cuts import (
+    KEEP_PAUSE,
+    LEAD_SECONDS,
     MAX_SEGMENTS,
     MAX_SENTENCE,
     TAIL_SECONDS,
@@ -10,6 +12,7 @@ from clipbot.cuts import (
     pad,
     sentence_spans,
     snap_outward,
+    speech_spans,
     tighten,
 )
 from clipbot.words import Word, words_from_cues
@@ -99,13 +102,116 @@ def test_tighten_removes_a_filler_with_breath_and_never_cuts_inside_a_word():
     assert rep.removed_seconds == pytest.approx(0.6) and not rep.intact
 
 
-def test_tighten_shortens_silent_word_gaps_to_keep_pause_and_clips_the_silence_to_the_words():
+def test_tighten_shortens_silent_word_gaps_to_keep_pause_and_measures_the_pause_on_the_audio():
     ws = words([(0.0, 1.0, "Alpha"), (1.0, 2.0, "beta."), (5.0, 6.0, "Gamma"), (6.0, 7.0, "delta."), (7.5, 8.5, "Eps"), (8.5, 9.5, "end.")])
-    # ffmpeg's silence 1.8-5.2 overlaps "beta." and "Gamma": the pause is their gap 2.0-5.0, cut down the
-    # middle to KEEP_PAUSE (0.175 s of air each side). The 0.5 s pause at 7.0 is under max_silence and stays.
+    # ffmpeg's silence 1.8-5.2 overlaps "beta." and "Gamma" by 0.2 s each: whisper stretched both words
+    # over the pause, so the pause is the silence 1.8-5.2, cut down the middle to KEEP_PAUSE (0.175 s of
+    # silence each side of the join). The 0.5 s pause at 7.0 is under max_silence and stays.
     rep = tighten(0.0, 9.5, ws, [(1.8, 5.2), (7.0, 7.5)])
-    assert segs(rep) == [(0.0, 2.175), (4.825, 9.5)]
-    assert rep.fillers == 0 and rep.silence_seconds == pytest.approx(2.65)
+    assert segs(rep) == [(0.0, 1.975), (5.025, 9.5)]
+    assert rep.fillers == 0 and rep.silence_seconds == pytest.approx(3.05)
+
+
+def test_speech_spans_gives_up_silence_inside_a_run_but_never_a_run_inside_silence():
+    """talk2 655 s: whisper's "content," spans 1.66 s with 1.25 s of dead air inside (cuts.py docstring, 3)."""
+    ws = words([(654.57, 655.21, "digestible"), (655.21, 656.87, "content,"), (657.13, 657.23, "right?")])
+    assert speech_spans(ws, [(655.38, 656.63)]) == [(654.57, 655.38), (656.63, 656.87), (657.13, 657.23)]
+    # a run whisper placed inside silence (a hallucination, or a speaker under the detector's threshold) stays whole
+    assert speech_spans(ws, [(654.5, 657.0)]) == [(654.57, 656.87), (657.13, 657.23)]
+    # a sliver of sound (< VOICED_MARGIN) beside the silence is not enough to trust the detector over whisper
+    assert speech_spans(ws, [(654.57, 656.80)]) == [(654.57, 656.87), (657.13, 657.23)]
+    assert speech_spans(ws, None) == speech_spans(ws, []) == [(654.57, 656.87), (657.13, 657.23)]
+    assert speech_spans([], [(1.0, 2.0)]) == []
+
+
+def test_tighten_shortens_a_pause_whisper_hid_inside_a_word():
+    """Case 1 of the third reel's verifier: "content," 655.21-656.87 held a 1.25 s silence; the cut
+    lands inside the whisper span, KEEP_PAUSE/2 inside the silence on each side."""
+    ws = words([(653.87, 654.57, "easily"), (654.57, 655.21, "digestible"), (655.21, 656.87, "content,"), (657.13, 657.23, "right?")])
+    rep = tighten(653.72, 657.53, ws, [(655.38, 656.63)])
+    assert segs(rep) == [(653.72, 655.555), (656.455, 657.53)]
+    assert rep.silence_seconds == pytest.approx(1.25 - 0.35) and rep.fillers == 0
+    # "flipped" 950.03-952.09 with silence 950.86-952.02: only 0.07 s of the WORD follows the silence, but the
+    # run goes on ("transitions where"), so the silence is a pause inside the run
+    ws = words([(949.07, 950.03, "having"), (950.03, 952.09, "flipped"), (952.09, 952.81, "transitions"), (952.81, 953.87, "where")])
+    assert segs(tighten(948.92, 954.17, ws, [(950.86, 952.02)])) == [(948.92, 951.035), (951.845, 954.17)]
+    # were "transitions" not abutting, the run would end 0.07 s after the silence: too little sound to
+    # trust, the word is left whole and the pause stays (the conservative failure)
+    apart = words([(949.07, 950.03, "having"), (950.03, 952.09, "flipped"), (952.2, 952.81, "transitions"), (952.81, 953.87, "where")])
+    assert tighten(948.92, 954.17, apart, [(950.86, 952.02)]).segments == ((948.92, 954.17),)
+
+
+def test_tighten_trims_a_stretched_word_end_so_the_splice_holds_only_keep_pause():
+    """Case 2: "for" 3949.96-3951.16 ended 1.1 s after the sound stopped; the old cut trusted the word
+    end and the splice "for | us" held 1.39 s of silence."""
+    ws = words([(3948.66, 3949.02, "your"), (3949.02, 3949.46, "agent"), (3949.46, 3949.68, "real"), (3949.68, 3949.96, "quick"),
+                (3949.96, 3951.16, "for"), (3952.44, 3952.70, "us"), (3952.70, 3952.9, "to"), (3952.9, 3953.8, "do that.")])
+    silence = (3950.12, 3952.30)
+    rep = tighten(3948.51, 3954.1, ws, [silence])
+    assert segs(rep) == [(3948.51, 3950.295), (3952.125, 3954.1)]
+    (_, cut_a), (cut_b, _) = rep.segments
+    assert (cut_a - silence[0]) + (silence[1] - cut_b) == pytest.approx(KEEP_PAUSE)  # what the viewer hears
+    assert rep.silence_seconds == pytest.approx(2.18 - KEEP_PAUSE)
+
+
+def test_tighten_trims_stretched_silence_at_the_moments_own_edges_to_lead_and_tail():
+    """Case 3: the last word "while." 3979.03-3979.99 stopped sounding at 3979.23; with 0.3 s of tail
+    air the clip ended on 1.06 s of nothing. The tail is measured from where the sound stops."""
+    ws = words([(3976.99, 3978.15, "not"), (3978.15, 3978.43, "touch"), (3978.43, 3978.67, "anything"), (3978.67, 3978.91, "for"),
+                (3978.91, 3979.03, "a"), (3979.03, 3979.99, "while.")])
+    end = 3979.99 + TAIL_SECONDS
+    rep = tighten(3976.99 - LEAD_SECONDS, end, ws, [(3979.23, end)])
+    assert segs(rep) == [(3976.84, 3979.23 + TAIL_SECONDS)] and rep.silence_seconds == pytest.approx(0.76)
+    # the mirror image at the start: whisper's first word begins 0.6 s before the sound does
+    ws = words([(10.0, 11.0, "So"), (11.0, 11.5, "then"), (11.5, 14.0, "we shipped it.")])
+    rep = tighten(10.0 - LEAD_SECONDS, 14.3, ws, [(9.85, 10.6)])
+    assert segs(rep) == [(10.6 - LEAD_SECONDS, 14.3)]
+    # air that is not silent (a breath before the first word) is not trimmed
+    assert tighten(10.0 - LEAD_SECONDS, 14.3, ws, []).segments == ((9.85, 14.3),)
+    # the moment's own lead/tail can be set (cli --lead-seconds/--tail-seconds)
+    assert segs(tighten(9.85, 14.3, ws, [(9.85, 10.6)], lead=0.3)) == [(10.3, 14.3)]
+
+
+def test_tighten_measures_a_pause_across_words_whisper_shifted_into_dead_air():
+    """Case 4: "But well," 138.26-139.22 sits in -80 dB silence; the sound starts at 139.05. The word
+    gap before it (135.84-138.26) held two silences of which only 0.65 s lay in the gap, so nothing
+    was cut and 1.44 s of nothing reached the reel. The run keeps 0.17 s of sound, so the audio wins."""
+    ws = words([(134.64, 134.74, "do"), (134.74, 134.84, "the"), (134.84, 135.04, "full"), (135.04, 135.28, "scope"), (135.28, 135.52, "all"),
+                (135.52, 135.84, "itself."), (138.26, 138.74, "But"), (138.74, 139.22, "well,"), (139.40, 139.74, "that's"),
+                (139.74, 139.98, "no"), (139.98, 140.22, "fun"), (140.22, 140.40, "to"), (140.40, 141.5, "work with.")])
+    rep = tighten(133.0, 141.8, ws, [(135.87, 137.17), (137.61, 139.05)])
+    # both silences are cut; the 0.44 s of untranscribed sound between them is too short to stand
+    # between two joins and goes with the pause (one cut), as a cough does
+    assert segs(rep) == [(133.0, 136.045), (138.875, 141.8)]
+    # "alive. [0.94 s] Yeah," where whisper's "Yeah," starts 0.33 s early: the same rule, one word
+    ws = words([(2017.55, 2017.75, "it's"), (2017.75, 2017.97, "not"), (2017.97, 2018.21, "made"), (2018.21, 2018.33, "to"),
+                (2018.33, 2018.45, "be"), (2018.45, 2018.91, "alive."), (2019.51, 2019.99, "Yeah,"), (2020.13, 2020.33, "okay."),
+                (2020.5, 2022.0, "Let's move on.")])
+    assert segs(tighten(2017.4, 2022.3, ws, [(2018.90, 2019.84)])) == [(2017.4, 2019.075), (2019.665, 2022.3)]
+
+
+def test_filler_cut_measures_its_breath_from_the_acoustic_edge_of_the_neighbour():
+    """"so" is stretched 0.7 s past its sound; the filler cut after it used to start 0.15 s after
+    whisper's word end and leave 0.85 s of nothing before the join."""
+    ws = words([(7.0, 9.5, "And then we said"), (9.5, 10.6, "so"), (10.6, 10.9, "um"), (11.15, 11.4, "the"), (11.4, 14.0, "plan is set.")])
+    rep = tighten(6.85, 14.3, ws, [(9.9, 10.6)])
+    assert segs(rep) == [(6.85, 10.05), (11.0, 14.3)] and rep.fillers == 1
+    assert segs(tighten(6.85, 14.3, ws, None)) == [(6.85, 10.75), (11.0, 14.3)]  # no audio: whisper's edge
+
+
+def test_removal_cap_counts_cuts_that_could_hold_speech_not_audio_confirmed_silence():
+    """The cap guards against cutting a stretch whisper did not transcribe. A pause cut the audio
+    confirmed holds nothing but silence, so a moment that is half dead air is tightened, not kept
+    whole (talk2's moment 6 gives up 13.8 s of its 36 s); without silence data the same cuts might
+    be untranscribed speech and the cap holds."""
+    ws = words([(0, 2, "a."), (18, 20, "b.")])
+    rep = tighten(0.0, 20.0, ws, [(2.0, 18.0)])
+    assert segs(rep) == [(0.0, 2.175), (17.825, 20.0)] and not rep.intact
+    assert tighten(0.0, 20.0, ws, None).intact
+    # filler cuts always count: whisper's "um" may be a mislabelled word, and the breath is speech-adjacent
+    ws = words([(0, 3.0, "So the plan is"), (3.2, 5.2, "um"), (5.2, 7.2, "uh"), (7.2, 9.2, "um"), (9.4, 12.0, "go on.")])
+    rep = tighten(0.0, 12.0, ws, [])
+    assert rep.intact and "51%" in rep.note
 
 
 def test_tighten_shortens_even_a_one_second_gap_but_the_silence_path_still_needs_a_saving():

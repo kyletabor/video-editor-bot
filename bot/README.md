@@ -88,29 +88,45 @@ moment, whichever way it was chosen, now goes through the same steps:
    into the next word.
 3. **Fillers and pauses** (on by default; `--keep-fillers` turns it off).
    "um", "uh", "ah", "er", "hmm", and "like" / "you know" when set off by commas
-   or pauses, are cut with 0.15 s of breath on each side. A pause is a gap
-   between two words that the audio agrees is silent (`ffmpeg -af
-   silencedetect=noise=-35dB` on the source, one seek per moment, in parallel);
-   every silent stretch longer than `--max-silence` (0.7 s) is shortened to
-   `--keep-pause` (0.35 s) by cutting its middle. Both sources are needed:
-   whisper's word edges are approximate and it emits zero-length words, and on
-   talk2 a "gap" between words held 1.7 s of untranscribed speech at full
-   volume, so a gap alone can be speech; and a silence alone cannot tell a quiet
-   word end from a pause, so it is clipped to the word edges. What is neither a
-   word nor silence (a laugh, cross-talk, a cough) stays. Guardrails: a cut never
-   lands inside a word, so a pause whisper stretched a word over (talk2's "very"
-   spans 1.9 s with 0.84 s of silence inside) stays too; no kept fragment is
-   shorter than 1.5 s because of a filler cut (the cut is cancelled instead;
-   pause cuts remove no speech and are exempt); at most 20 segments per clip; and
-   if the cuts would remove more than 40 % of a moment it is kept whole with a
-   warning — that much "silence" is dead air worth re-picking or a stretch
-   whisper did not transcribe. With Meet captions only (no word timings) fillers
-   stay, pauses come from the audio alone and are shortened to 0.7 s.
+   or pauses, are cut with 0.15 s of breath on each side. A pause is where the
+   **audio** is silent (`ffmpeg -af silencedetect=noise=-35dB` on the source,
+   downmixed to mono, one seek per moment, in parallel; silences separated by
+   less than 0.1 s of sound, a click, count as one), not where whisper has no
+   word: every silent stretch longer than `--max-silence` (0.7 s) between two
+   pieces of speech is shortened to `--keep-pause` (0.35 s) by cutting its
+   middle, and silence at a moment's own edges is trimmed to the lead/tail.
+   Both sources are needed: whisper emits zero-length words and misses speech
+   (on talk2 a "gap" between words held 1.7 s of untranscribed speech at full
+   volume), so a gap alone can be speech; and the detector alone cannot tell a
+   soft word edge from a pause, so a cut keeps 0.175 s of the silence on each
+   side. What is neither a word nor silence (a laugh, cross-talk, a cough)
+   stays. Guardrails: no kept fragment is shorter than 1.5 s because of a
+   filler cut (the cut is cancelled instead; pause cuts remove no speech and
+   are exempt); at most 20 segments per clip; and if the cuts that could hold
+   speech (filler cuts, and pause cuts made without silence data) would remove
+   more than 40 % of a moment it is kept whole with a warning — that much is a
+   stretch whisper did not transcribe. A pause the audio confirmed is exempt:
+   talk2's moment 6 gives up 13.8 s of dead air out of 36 s and should. With
+   Meet captions only (no word timings) fillers stay, pauses come from the
+   audio alone and are shortened to 0.7 s.
+4. **Where the speech is: the audio decides, not whisper's span.** The third
+   reel had no cut inside a word and still kept ten pauses over 0.9 s: whisper
+   had stretched "very" over 1.9 s with 0.84 s of dead air inside, ended "for"
+   1.1 s after the sound stopped (so the splice "for | us" held 1.39 s of
+   nothing), and placed "But well," 0.8 s early, inside -80 dB silence. A run
+   of words that abut is whisper's one span estimate; a run gives up a silence
+   inside it when it still has 0.12 s of sound on every side where it continues
+   past that silence, and that silence is then a pause like any other. A run
+   that lies wholly (or all but a sliver) in silence is left alone: a quiet
+   speaker or a hallucination, nobody knows where the words are. Voiced audio is
+   never cut: a cut only ever lies inside a detected silence, with 0.175 s (or
+   the lead/tail at a moment's edges) of that silence kept on each side. Filler
+   cuts measure their breath from the same acoustic edges.
 
 The run prints, per moment, the requested span, the snapped span and what was
 cut; the moment's `segments` in the plan are the keep-list. The runtime on the
 intro card and in the `reel:` line is intro + opening + every card + kept speech
-+ closing + outro, rounded to the second.
++ closing + outro, rounded to the second, computed after every card is final.
 
 ## Lessons and the summary at the end (`clipbot/lessons.py`)
 
@@ -125,6 +141,22 @@ executive summary. `summary.md` repeats them under **Takeaways**. `--music FILE`
 adds a bed under the cards (an audio file you have the rights to;
 `contract/README.md`), `--transition cut|dip|dissolve` picks the join (default
 `dip`).
+
+`--framing FILE` (`clipbot/framing.py`) sets all of that from one JSON file, so
+nothing has to be patched into `plan.json` afterwards (the third reel's intro
+said 4:50 while the file ran 4:55 because the cards were edited after the
+runtime line was computed). Every key is optional and overrides the matching
+flag: `title`, `date`, `what_you_will_learn` (≤ 4 lines, the opening card),
+`takeaways` (≤ 12 lines, 4 per closing card), `outro {title, lines}`,
+`opening_seconds` / `closing_seconds` / `outro_seconds` (1–10, per card),
+`music_gain_db` (−40..0) and `music_fade_seconds` (0–5) for the `--music` bed,
+`transition` (`"dip"` or `{kind, seconds}`). Text over the contract's limits
+(80-character titles, 120-character lines) is an error, not an ellipsis.
+
+```bash
+uv run --project bot clipbot reel --source talk.mp4 --srt talk.srt --words talk.words.json \
+    --moments moments.json --music assets/music/bed.mp3 --framing framing.json --out out/talk/plan.json
+```
 
 `clipbot outline` is the reading companion: a 30-second-block transcript
 (`[h:mm:ss] Speaker: text`) and a JSON skeleton for `--moments` at the end,

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from clipbot.silence import detect_silences, parse_silencedetect, silencedetect_args
+from clipbot.silence import BLIP_SECONDS, detect_silences, merge_silences, parse_silencedetect, silencedetect_args
 
 
 def test_silencedetect_args_are_a_list_with_input_seeking_and_the_filter():
@@ -10,8 +10,22 @@ def test_silencedetect_args_are_a_list_with_input_seeking_and_the_filter():
     assert args[0] == "ffmpeg" and "in file.mp4" in args and args[-1] == "-"  # one argv entry, never a shell string
     assert args[args.index("-ss") + 1] == "120.500" and args[args.index("-t") + 1] == "42.250"
     assert args.index("-ss") < args.index("-i")  # input seeking: a moment at 73 min costs a fraction of a second
-    assert args[args.index("-af") + 1] == "silencedetect=noise=-35dB:d=0.7"
+    # mono first (a stereo track's ticks break a pause in two), then every silence >= 0.2 s; merge_silences
+    # joins them and applies the caller's minimum
+    assert args[args.index("-af") + 1] == "aformat=channel_layouts=mono,silencedetect=noise=-35dB:d=0.2"
+    fine = silencedetect_args("x", 0, 1, min_seconds=0.1)
+    assert fine[fine.index("-af") + 1].endswith("d=0.1")  # never coarser than asked
     assert "-vn" in args and "-nostdin" in args
+
+
+def test_merge_silences_bridges_blips_and_drops_short_runs():
+    """talk2 135.87-137.17: a 1.3 s pause with a 30 ms click at 136.52, reported as 0.646 + 0.620 s
+    and so never as a 0.7 s silence. A click is not a word; the pause is one pause."""
+    found = [(135.874, 136.520), (136.550, 137.170), (144.138, 144.347), (149.159, 149.920)]
+    assert merge_silences(found, 0.7) == [(135.874, 137.170), (149.159, 149.920)]
+    assert merge_silences([(1.0, 1.5), (1.5 + BLIP_SECONDS, 2.2)], 0.7) == []  # a gap of BLIP_SECONDS separates
+    assert merge_silences([(3.0, 3.4), (2.0, 2.5), (2.55, 2.99)], 0.9) == [(2.0, 3.4)]  # unsorted input, chained blips
+    assert merge_silences([], 0.7) == []
 
 
 def test_parse_silencedetect_adds_the_seek_offset_and_closes_an_open_silence():

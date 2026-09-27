@@ -156,16 +156,18 @@ def test_a_pause_is_cut_only_where_the_audio_agrees_it_is_silent():
     """talk2 at 50:50: whisper's zero-length "Okay," sits in a 0.78 s gap between "transfer." and
     "so" that the audio shows is not silent at all; and at 33:40 a 0.74 s gap between "okay."
     and "Push" is full of sound. A gap cut on word timing alone removed that "Okay,"."""
-    ws = words([(0, 1, "transfer."), (1.78, 2.2, "so"), (5.0, 6.0, "Yes,"), (6.4, 7.0, "it."), (9.5, 10.0, "Push")])
+    ws = words([(0, 1, "transfer."), (1.78, 2.2, "so"), (5.0, 6.0, "Yes,"), (6.4, 7.0, "it."), (9.5, 11.0, "Push it.")])
     # gap 1 (0.78 s): the audio reports no silence -> kept. gap 2 (2.8 s): silent only 2.6-4.9 (a laugh
-    # first) -> that stretch alone is cut to KEEP_PAUSE; the laugh stays. gap 3 (2.5 s): silent
-    # throughout, the detected silence spills into both words -> clipped to the word edges.
-    rep = tighten(0.0, 10.3, ws, [(2.6, 4.9), (6.9, 9.6)])
-    assert segs(rep) == [(0.0, 2.775), (4.725, 7.175), (9.325, 10.3)]
+    # first) -> that stretch alone is cut to KEEP_PAUSE; the laugh stays. gap 3: the detected silence
+    # 6.9-9.6 spills 0.1 s into "it." and "Push": whisper's spans are estimates and the audio is not,
+    # so those are the words' silent edges, the pause is the whole silence, and the join keeps
+    # KEEP_PAUSE/2 of it on each side (cuts.py docstring, 3).
+    rep = tighten(0.0, 11.3, ws, [(2.6, 4.9), (6.9, 9.6)])
+    assert segs(rep) == [(0.0, 2.775), (4.725, 7.075), (9.425, 11.3)]
     # a silence shorter than max_silence inside a long gap is not worth a join; nothing else is cut
-    assert tighten(0.0, 10.3, ws, [(2.6, 3.2)]).segments == ((0.0, 10.3),)
+    assert tighten(0.0, 11.3, ws, [(2.6, 3.2)]).segments == ((0.0, 11.3),)
     # the audio checked and found nothing: no pause cut at all
-    assert tighten(0.0, 10.3, ws, []).segments == ((0.0, 10.3),)
+    assert tighten(0.0, 11.3, ws, []).segments == ((0.0, 11.3),)
     # two silences in one gap separated by a cough: the cough is neither a word nor silence and is
     # too short to stand alone between two joins, so it goes with the pause (one cut)
     ws = words([(0, 1, "a."), (5.0, 12.0, "b c d e.")])
@@ -243,8 +245,10 @@ REAL = {
     "source": DATA / "talk2-recording.mp4",
     "srt": DATA / "talk2-words.srt",
     "words": DATA / "talk2-words.words.json",
-    "moments": DATA / "talk2-moments-v2.json",
+    "moments": DATA / "talk2-moments-v3.json",
 }
+LONG_SILENCE = 0.9  # the independent verifier's threshold for a pause a viewer notices
+CUT_MARGIN = 0.1  # a cut inside a whisper span must be at least this far from sound
 
 
 def _tools_present() -> bool:
@@ -256,53 +260,70 @@ def _tools_present() -> bool:
         return False
 
 
-def word_safety(plan: dict, ws: list[Word], *, max_gap: float = 0.8, lead: float = LEAD_SECONDS,
-                tail: float = TAIL_SECONDS) -> dict[str, list]:
-    """What the verifier checks: no segment edge inside a word, no more air than the
-    lead/tail at a clip's ends, and (for the record, not a fault by itself) every gap
-    between consecutive words inside a segment over `max_gap`: such a gap is kept on
-    purpose when the audio in it is not silent. Returns the findings by kind."""
-    out: dict[str, list] = {"straddles": [], "gaps": [], "air": []}
+def _covering(t: float, silences: list[tuple[float, float]]) -> tuple[float, float] | None:
+    return next(((s, e) for s, e in silences if s - 1e-3 <= t <= e + 1e-3), None)
+
+
+def acoustic_safety(plan: dict, ws: list[Word], source, *, lead: float = LEAD_SECONDS,
+                    tail: float = TAIL_SECONDS) -> dict[str, list]:
+    """What the verifier hears, measured on the audio, not on the word list:
+    `voiced_cuts`: a segment edge inside a whisper word span that is not inside a
+    detected silence with CUT_MARGIN of silence to spare (whisper's span is an
+    estimate; the audio is the ground truth, cuts.py docstring 3); `long`: a
+    silence of LONG_SILENCE or more inside a kept segment; `air`: more than
+    `lead` / `tail` of nothing at a clip's ends, counted from where the sound
+    stops or from whisper's word edge, whichever is nearer the cut."""
+    out: dict[str, list] = {"voiced_cuts": [], "long": [], "air": []}
+    segments = [(s["start"], s["end"]) for c in plan["clips"] for s in c["segments"]]
+    around = detect_silences(source, [(a - 1.0, b + 1.0) for a, b in segments], min_seconds=0.2)
+    inside = detect_silences(source, segments, min_seconds=LONG_SILENCE)
+    k = 0
     for clip in plan["clips"]:
-        segments = clip["segments"]
-        for k, seg in enumerate(segments):
+        n = len(clip["segments"])
+        for j, seg in enumerate(clip["segments"]):
             a, b = seg["start"], seg["end"]
+            sil = around[k]
             for edge in (a, b):
-                for w in ws:
-                    if w.start + 1e-3 < edge < w.end - 1e-3:
-                        out["straddles"].append((clip["id"][:7], edge, w.text, w.start, w.end))
-            inside = [w for w in ws if w.start >= a - 1e-3 and w.end <= b + 1e-3]
-            for p, q in zip(inside, inside[1:]):
-                if q.start - p.end > max_gap:
-                    out["gaps"].append((clip["id"][:7], p.end, q.start, round(q.start - p.end, 2)))
-            if inside and k == 0 and inside[0].start - a > lead + 1e-3:
-                out["air"].append((clip["id"][:7], "lead", round(inside[0].start - a, 3)))
-            if inside and k == len(segments) - 1 and b - inside[-1].end > tail + 1e-3:
-                out["air"].append((clip["id"][:7], "tail", round(b - inside[-1].end, 3)))
+                if any(w.start + 1e-3 < edge < w.end - 1e-3 for w in ws):
+                    cover = _covering(edge, sil)
+                    if cover is None or edge - cover[0] < CUT_MARGIN - 1e-3 or cover[1] - edge < CUT_MARGIN - 1e-3:
+                        out["voiced_cuts"].append((clip["id"][:7], edge, cover))
+            out["long"].extend((clip["id"][:7], round(s, 2), round(e, 2), round(e - s, 2)) for s, e in inside[k])
+            words_in = [w for w in ws if w.end > a and w.start < b]
+            if words_in and j == 0:
+                head = _covering(a, sil)
+                onset = min(words_in[0].start, head[1] if head else words_in[0].start)
+                if onset - a > lead + 1e-3:
+                    out["air"].append((clip["id"][:7], "lead", round(onset - a, 3)))
+            if words_in and j == n - 1:
+                last = _covering(b, sil)
+                offset = max(words_in[-1].end, last[0] if last else words_in[-1].end)
+                if b - offset > tail + 1e-3:
+                    out["air"].append((clip["id"][:7], "tail", round(b - offset, 3)))
+            k += 1
     return out
-
-
-def silence_outside_words(s: float, e: float, ws: list[Word]) -> float:
-    """Seconds of the silence [s, e] that no whisper word span covers."""
-    return (e - s) - sum(max(0.0, min(e, w.end) - max(s, w.start)) for w in ws if w.start < e and w.end > s)
 
 
 @pytest.mark.skipif(not all(p.exists() for p in REAL.values()) or not _tools_present(),
                     reason="needs the talk2 recording, its whisper words and ffmpeg")
-def test_real_talk2_reel_is_word_safe_and_has_no_long_silence_left(tmp_path, capsys):
+def test_real_talk2_reel_never_cuts_sound_and_leaves_no_long_silence(tmp_path, capsys):
+    """The third reel's verifier: 0 in-word cut ends but 10 acoustic silences >= 0.9 s inside kept
+    audio, all of them whisper spans stretched over a pause or shifted into dead air. Now a cut may
+    sit inside a whisper span, but only inside detected silence with margin, and no long silence
+    survives anywhere in the kept audio: not inside a word span, not at a segment tail, not across a
+    join."""
     out = tmp_path / "plan.json"
     rc = cli.main(["reel", "--source", str(REAL["source"]), "--srt", str(REAL["srt"]), "--words", str(REAL["words"]),
                    "--moments", str(REAL["moments"]), "--out", str(out)])
     assert rc == 0, capsys.readouterr()
     plan = json.loads(out.read_text(encoding="utf-8"))
     ws = load_words(REAL["words"])
-    found = word_safety(plan, ws)
-    assert found["straddles"] == [] and found["air"] == []
-    # What the viewer hears: no silence of 0.8 s or more survives between words inside a kept segment.
-    # One may survive INSIDE a whisper word span (whisper stretches a word over the pause after it:
-    # "very" 378.59-380.49 holds 0.84 s of silence) because a cut never lands inside a word.
+    found = acoustic_safety(plan, ws, REAL["source"])
+    assert found["voiced_cuts"] == []
+    assert found["air"] == []
+    assert found["long"] == []
+    # and the pauses that did survive in the third reel are gone: "content," (655.4-656.6), "flipped"
+    # (950.9-952.0), "for | us" (3950.1-3952.3), the tail of "while." (3979.2-3980.3), "a good" (4398.1-4399.7)
     segments = [(s["start"], s["end"]) for c in plan["clips"] for s in c["segments"]]
-    survivors = [(a, b, s, e) for (a, b), sils in zip(segments, detect_silences(REAL["source"], segments, min_seconds=0.8))
-                 for s, e in sils]
-    for a, b, s, e in survivors:
-        assert silence_outside_words(s, e, ws) <= MAX_SILENCE + 0.05, (a, b, s, e)
+    for t in (655.9, 951.4, 3951.0, 3979.9, 4399.0):
+        assert not any(a < t < b for a, b in segments), t
