@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from clipbot import cli, score, styles
-from clipbot.plan import validate
+from clipbot.plan import REPO_ROOT, validate
 from clipbot.score import Blocks, Placement, Run, card_runs, cue_graph, plan_cue
 from tests.test_reel import DEMO_MP4, needs_demo
 
@@ -151,10 +151,12 @@ def test_last_run_trims_the_pickup_when_there_is_less_than_a_pickup_of_room():
     assert cue[0].skip == F(1, 10) and cue[0].fade_in > 0
 
 
-def test_last_run_too_short_for_the_whole_ending_plays_its_final_chord():
+def test_last_run_too_short_for_the_whole_ending_plays_the_pickup_into_its_final_chord():
     b = blocks()
     cue = plan_cue(5, "last", b)  # 6 s outro does not fit; its last 4 s (after the 2 s lead bar) do
-    assert cue == [Placement(Path("outro"), F(4, 5), skip=F(2))]
+    assert cue == [Placement(Path("pickup"), F(0), skip=F(1, 5), fade_in=F(3, 100)),  # 0.8 s of the 1 s pickup
+                   Placement(Path("outro"), F(4, 5), skip=F(2), fade_in=F(1, 200))]  # cut in without a click
+    assert names(plan_cue(F(59, 10), "last", b)) == [("pickup", F(7, 10)), ("outro", F(17, 10))]  # room for all of the pickup
     assert [p.file.name for p in plan_cue(3, "last", b)] == ["hold"]
     # a style without an outro ends on a bar turned home and the held chord
     assert [p.file.name for p in plan_cue(3, "last", blocks(outro=None))] == ["a-home", "hold"]
@@ -169,6 +171,22 @@ def test_no_block_starts_after_its_run_ends():
                 assert 0 <= p.at < seconds, (seconds, position, p)
                 if p.seconds is not None:
                     assert p.at + p.seconds <= seconds, (seconds, position, p)
+
+
+def test_runs_match_the_fixture_the_renderer_is_pinned_to():
+    """contract/fixtures/card-runs.json is written from the renderer's arithmetic and asserted by
+    render/tests too: score.card_runs is a copy of that arithmetic and must not drift from it."""
+    fixture = json.loads((REPO_ROOT / "contract" / "fixtures" / "card-runs.json").read_text(encoding="utf-8"))
+    assert len(fixture["cases"]) >= 7
+    for case in fixture["cases"]:
+        validate(case["plan"])
+        runs = card_runs(case["plan"], F(case["fps"]))
+        assert [[str(r.start), str(r.seconds)] for r in runs] == case["runs"], case["name"]
+
+
+def test_source_fps_refuses_a_source_it_cannot_read(tmp_path):
+    with pytest.raises(RuntimeError, match="is not there to take the frame rate from"):
+        score.source_fps(tmp_path / "moved.mp4")
 
 
 # --- the graph ---------------------------------------------------------------------------------------
@@ -193,6 +211,27 @@ def test_pipeline_style_lengths_match_its_files():
     b = score.blocks_of(styles.load("pipeline"))
     assert b.bar == F(60 * 4, 104) and b.pickup_seconds == b.bar / 2 and b.outro_lead == b.bar
     assert len(b.vamp) == 4 and len(b.stings) == 4
+
+
+def _copy_of_pipeline(tmp_path, **outro):
+    """The pipeline style in a temp directory with its outro entry changed."""
+    import shutil
+
+    shipped = styles.load("pipeline")
+    shutil.copytree(shipped.root, tmp_path / "copy")
+    data = json.loads((tmp_path / "copy" / "style.json").read_text(encoding="utf-8"))
+    data["music"]["outro"].update(outro)
+    (tmp_path / "copy" / "style.json").write_text(json.dumps(data), encoding="utf-8")
+    return styles.load(str(tmp_path / "copy"))
+
+
+@needs_ffmpeg
+def test_a_style_whose_stated_block_lengths_are_wrong_is_refused(tmp_path):
+    score.verify_blocks(styles.load("pipeline"))  # the shipped numbers are the files' own
+    with pytest.raises(ValueError, match=r"music\.outro\.seconds says 4 s but music/outro\.flac is 6\.08"):
+        score.verify_blocks(_copy_of_pipeline(tmp_path, seconds=4.0))
+    with pytest.raises(ValueError, match=r"lead_bars \(5\) is the whole 6\.081 s outro"):
+        score.blocks_of(_copy_of_pipeline(tmp_path / "b", lead_bars=5))
 
 
 def _levels(path: Path, spans):
@@ -261,3 +300,14 @@ def test_cli_reel_with_a_cue_style_writes_the_cues_and_points_the_plan_at_them(t
     assert sum(r.seconds for r in longer) > sum(r.seconds for r in runs)
     with wave.open(str(cues)) as w:
         assert w.getnframes() == round((sum(r.seconds for r in longer) + 1) * 48000)
+
+    # a plan that is not a plan is reported as that, and a source that moved is not scored at 24 fps
+    broken = dict(rescored)
+    broken.pop("clips")
+    out.write_text(json.dumps(broken), encoding="utf-8")
+    assert cli.main(["score", str(out), "--style", "pipeline"]) == 1
+    assert "plan violates contract" in capsys.readouterr().err
+    rescored["source"]["path"] = str(tmp_path / "moved.mp4")
+    out.write_text(json.dumps(rescored), encoding="utf-8")
+    assert cli.main(["score", str(out), "--style", "pipeline"]) == 1
+    assert "is not there to take the frame rate from" in capsys.readouterr().err

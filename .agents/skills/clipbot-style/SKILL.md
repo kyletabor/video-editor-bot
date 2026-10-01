@@ -35,8 +35,8 @@ uv run --project bot clipbot reel --source <file> --style <name> --render --out 
 You cannot hear it. Measure it, and say that you measured rather than listened.
 
 - Under a card run: `ffmpeg -ss <start> -t <len> -i reel.mp4 -af volumedetect -f null -` shows
-  music (mean around -25 to -30 dB for `pipeline`).
-- In the first second of every clip: the same level as the rest of the clip, no music tail.
+  music (mean around -23 dB for `pipeline`, about 4 dB under the speech).
+- The last 30 ms of every card run (with a dip or cut): below -55 dB. The cue ended with its card.
 - The last 0.3 s of the reel: below -50 dB. The ending finished; it was not cut off.
 - Then tell the user which moments to listen to: the first card, one chapter card, the ending.
 

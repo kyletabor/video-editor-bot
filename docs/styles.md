@@ -22,7 +22,8 @@ sound across every video. `--style` beats the framing file; an explicit `--music
 | `aurora` | "Aurora": pad and bells, 85 BPM | dissolve | Quiet, reflective material |
 | `classic` | 1924 Kansas City jazz (public domain) | dip | The first reels' sound |
 
-All music is under the cards only. Speech never has music under it.
+Music plays under the cards. With a dip or a cut, nothing plays under speech. A dissolve or a
+code-drawn transition overlaps a card and a clip for its length, and the music is heard there.
 
 ## How cue music is scored
 
@@ -39,10 +40,12 @@ music:  pickup, riff bars, held chord     sting+chord             pickup, riff b
 - **First run.** Pickup fill, as many riff bars as fit, then a held chord that fades as the
   first clip arrives.
 - **Chapter card.** One sting, then the chord for what is left of the card. The stings rotate,
-  so ten cards are not ten copies. A card of five seconds or more gets riff bars.
+  so ten cards are not ten copies. A card long enough for two bars and the chord (5.2 s for
+  the theme) gets riff bars instead.
 - **Last run.** Back-timed. The outro block is placed so the tune's own ending finishes 0.2 s
   before the reel does; riff bars fill the time before it and the pickup leads in. The music
-  ends. It is not faded out.
+  ends. It is not faded out. Last cards shorter than the whole ending (6.3 s for the theme)
+  get the pickup into its final chord.
 - The bar before a held chord or the outro is its `resolved` variant, so the harmony lands home.
 
 `clipbot reel --style pipeline` writes the cues to `music-cues.wav` next to the plan and points

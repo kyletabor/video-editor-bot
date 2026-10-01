@@ -96,6 +96,9 @@ def blocks_of(style: Style) -> Blocks:
     beat = Fraction(60) / Fraction(str(music["bpm"]))
     bar = beat * music["beats_per_bar"]
     pickup, outro = music.get("pickup"), music.get("outro")
+    if outro and bar * outro["lead_bars"] >= Fraction(str(outro["seconds"])):
+        raise ValueError(f"style {style.name}: music.outro.lead_bars ({outro['lead_bars']}) is the whole "
+                         f"{outro['seconds']:g} s outro; nothing would be left for the final chord")
     return Blocks(
         bar=bar,
         vamp=tuple((style.file(b["file"]), style.file(b["resolved"]) if "resolved" in b else None) for b in music["vamp"]),
@@ -110,16 +113,45 @@ def blocks_of(style: Style) -> Blocks:
     )
 
 
-# --- where the cards are (mirrors render/cliprender/reel.py) ---------------------------------------
+def verify_blocks(style: Style) -> None:
+    """The lengths style.json states against the files: a wrong `outro.seconds` back-times the
+    ending to the wrong place and cuts it off mid-ring, and nothing else would notice."""
+    music = style.music
+    for key in ("hold", "outro"):
+        block = music.get(key)
+        if not block:
+            continue
+        actual = float(_ffprobe(style.file(block["file"]), "format=duration"))
+        stated = float(block["seconds"])
+        if (key == "outro" and abs(actual - stated) > 0.02) or (key == "hold" and stated > actual + 0.02):
+            limit = "is" if key == "outro" else "is only"
+            raise ValueError(f"style {style.name}: music.{key}.seconds says {stated:g} s but {block['file']} "
+                             f"{limit} {actual:.3f} s")
+
+
+# --- where the cards are (mirrors render/cliprender/reel.py; pinned by contract/fixtures/card-runs.json) ---
+
+def _ffprobe(path: str | Path, entries: str, *select: str) -> str:
+    try:
+        return subprocess.run(["ffprobe", "-v", "error", *select, "-show_entries", entries, "-of", "csv=p=0", str(path)],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    except FileNotFoundError as e:
+        raise RuntimeError("ffprobe not found on PATH") from e
+    except subprocess.CalledProcessError as e:
+        tail = (e.stderr or "").strip().splitlines()[-1:] or ["no message"]
+        raise RuntimeError(f"ffprobe could not read {path}: {tail[0]}") from e
+
 
 def source_fps(path: str | Path) -> Fraction:
-    """The reel's frame rate as the renderer picks it: the source's nominal rate, else 24."""
+    """The reel's frame rate as the renderer picks it: the source's nominal rate, or 24 when
+    that is implausible. A source that cannot be read is an error, not 24: cues cut on the
+    wrong frame grid drift a little further off their cards with every run."""
+    if not Path(path).is_file():
+        raise RuntimeError(f"cannot score the music: the plan's source {path} is not there to take the frame rate from")
+    text = _ffprobe(path, "stream=r_frame_rate", "-select_streams", "v:0")
     try:
-        text = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
-             "-of", "csv=p=0", str(path)], check=True, capture_output=True, text=True).stdout.strip()
         rate = Fraction(text.splitlines()[0].strip().rstrip(","))
-    except (OSError, subprocess.CalledProcessError, ValueError, ZeroDivisionError, IndexError):
+    except (ValueError, ZeroDivisionError, IndexError):
         return Fraction(24)
     return rate if 1 <= rate <= 120 else Fraction(24)
 
@@ -200,24 +232,33 @@ def _hold(blocks: Blocks, at: Fraction, until: Fraction) -> list[Placement]:
     return [Placement(blocks.hold, at, seconds=length, fade_out=min(HOLD_FADE, length * Fraction(7, 10)))]
 
 
+def _lead_in(blocks: Blocks, downbeat: Fraction) -> list[Placement]:
+    """The pickup into a downbeat `downbeat` seconds into the cue: whole when there is room,
+    its end when there is not, nothing when less than 0.3 s is left."""
+    if not blocks.pickup:
+        return []
+    if downbeat >= blocks.pickup_seconds:
+        return [Placement(blocks.pickup, downbeat - blocks.pickup_seconds)]
+    if downbeat >= Fraction(3, 10):
+        return [Placement(blocks.pickup, Fraction(0), skip=blocks.pickup_seconds - downbeat, fade_in=Fraction(3, 100))]
+    return []
+
+
 def _ending(seconds: Fraction, blocks: Blocks) -> list[Placement]:
     """The last run, back-timed so the outro block ends END_MARGIN before the reel."""
     end = seconds - END_MARGIN
     start = end - blocks.outro_seconds
-    if start < 0:  # too short for the whole ending: the final chord alone, or just the held chord
+    if start < 0:  # too short for the whole ending: the pickup into its final chord, or just the held chord
         chord = blocks.outro_seconds - blocks.outro_lead
         if blocks.outro_lead > 0 and end - chord >= 0:
-            return [Placement(blocks.outro, end - chord, skip=blocks.outro_lead)]
+            # Cutting into the block mid-file lands in the ring-out of the bars it skips: 5 ms of
+            # fade hides that step and still leaves the hit its attack.
+            return _lead_in(blocks, end - chord) + [
+                Placement(blocks.outro, end - chord, skip=blocks.outro_lead, fade_in=Fraction(1, 200))]
         return _hold(blocks, Fraction(0), seconds)
     count = math.floor(start / blocks.bar)
     first = start - count * blocks.bar
-    placements = []
-    if blocks.pickup:
-        if first >= blocks.pickup_seconds:
-            placements.append(Placement(blocks.pickup, first - blocks.pickup_seconds))
-        elif first >= Fraction(3, 10):
-            placements.append(Placement(blocks.pickup, Fraction(0), skip=blocks.pickup_seconds - first,
-                                        fade_in=Fraction(3, 100)))
+    placements = _lead_in(blocks, first)
     placements += [Placement(f, first + k * blocks.bar) for k, f in enumerate(_bars(blocks, count))]
     placements.append(Placement(blocks.outro, start))
     return placements
@@ -367,6 +408,7 @@ def style_music(plan: dict, style: Style, out_dir: Path, *, gain_db: float | Non
         if fade is not None:
             out["fade_seconds"] = fade
         return out, f"style {style.name}: bed {Path(music['file']).name} under the cards"
+    verify_blocks(style)
     source = Path(plan["source"]["path"])
     fps = source_fps(source if source.is_absolute() else REPO_ROOT / source)
     scored = score(plan, style, fps)

@@ -109,6 +109,12 @@ def test_cli_reel_bed_style_from_the_framing_file_and_what_overrides_it(tmp_path
     assert reel["transition"] == {"kind": "dissolve", "seconds": 0.5} and reel["audio_fade_seconds"] == 0.3
     assert "style signal: bed signal.mp3 under the cards" in capsys.readouterr().err
 
+    # a cue style carries its own fades: a framing fade is ignored, and says so
+    framing.write_text(json.dumps({"style": "pipeline", "music_fade_seconds": 2.0}), encoding="utf-8")
+    assert cli.main([*base, "--framing", str(framing)]) == 0
+    assert "music_fade_seconds in" in capsys.readouterr().err
+    assert json.loads(out.read_text(encoding="utf-8"))["output"]["reel"]["music"]["fade_seconds"] == 0.0
+
     # --style beats the framing file's style; --transition and --music beat the style
     assert cli.main([*base, "--framing", str(framing), "--style", "classic", "--transition", "cut"]) == 0
     reel = json.loads(out.read_text(encoding="utf-8"))["output"]["reel"]

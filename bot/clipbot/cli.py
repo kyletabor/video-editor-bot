@@ -305,6 +305,9 @@ def cmd_reel(a: argparse.Namespace) -> int:
             if music:
                 reel["music"] = music
             print(note, file=sys.stderr)
+            if framing and framing.music_fade_seconds is not None and style.music and style.music["kind"] == "cues":
+                print(f"framing: music_fade_seconds in {a.framing} ignored: a cue style carries its own fades",
+                      file=sys.stderr)
     planmod.validate(plan)
     title = plan["output"]["reel"]["intro"]["title"]  # what the viewer sees, framing applied
     out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
@@ -367,7 +370,8 @@ def cmd_score(a: argparse.Namespace) -> int:
     For a plan whose cards or transition were edited by hand after `clipbot reel` wrote it."""
     path = Path(a.plan)
     plan = json.loads(path.read_text(encoding="utf-8"))
-    reel = (plan.get("output") or {}).get("reel")
+    planmod.validate(plan)  # a broken plan is the error to report, not whatever scoring trips over
+    reel = plan["output"].get("reel")
     if not reel:
         print("clipbot: the plan has no output.reel to score", file=sys.stderr)
         return 2
