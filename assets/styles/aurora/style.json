@@ -1,0 +1,7 @@
+{
+  "name": "aurora",
+  "title": "Aurora: calm pad and bells",
+  "description": "A warm pad with bell arpeggios, 85 BPM, D major. The quiet one. A bed under the cards, faded at the edges.",
+  "music": {"kind": "bed", "file": "music/aurora.mp3", "gain_db": -8, "fade_seconds": 1.0},
+  "transition": {"kind": "dissolve", "seconds": 0.5}
+}

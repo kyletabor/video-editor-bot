@@ -50,6 +50,12 @@ BAD_PLANS = {
     "music gain positive": minimal(output={"dir": "o", "reel": {"music": {"path": "m.mp3", "gain_db": 3}}}),
     "transition kind wipe": minimal(output={"dir": "o", "reel": {"transition": {"kind": "wipe"}}}),
     "transition too long": minimal(output={"dir": "o", "reel": {"transition": {"kind": "dip", "seconds": 5}}}),
+    # v1.3 code-drawn transitions: the module path goes with kind module and with nothing else
+    "module transition without a module": minimal(output={"dir": "o", "reel": {"transition": {"kind": "module"}}}),
+    "module path on a dip": minimal(
+        output={"dir": "o", "reel": {"transition": {"kind": "dip", "module": "t/wipe.py"}}}),
+    "module that is not a .py file": minimal(
+        output={"dir": "o", "reel": {"transition": {"kind": "module", "module": "t/wipe.txt"}}}),
     "closing with 4 cards": minimal(output={"dir": "o", "reel": {"closing": [{"title": "a"}] * 4}}),
 }
 

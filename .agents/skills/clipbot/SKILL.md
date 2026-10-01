@@ -36,6 +36,7 @@ thing that crosses between the two, so every edit you make happens in the plan
 | One clip: "the part where …" | `uv run --project bot clipbot plan --source <file> --request "<what it is about>" --summary --out out/<name>/plan.json`, then render |
 | Only the summary and transcript | `uv run --project bot clipbot summarize --source <file> --title "<title>" --out out/<name>/summary.md` |
 | Render an existing or hand-edited plan | `uv run --project render cliprender out/<name>/plan.json --root .` (`--overwrite` to replace earlier outputs) |
+| Music, a theme, transitions, "make it sound like ..." | add `--style <name>` to `clipbot reel` (`clipbot styles` lists them); a new sound or transition is the `clipbot-style` skill |
 
 - `--minutes N` targets N minutes ±20 % including cards (a 4 s intro and a 3 s
   chapter card per clip). 2.5–5 minutes suits a 1–2 hour session; the sample
@@ -44,6 +45,10 @@ thing that crosses between the two, so every edit you make happens in the plan
   recording's length (an hour of video takes roughly 10 minutes). Tell the user
   before starting. It saves an `.srt` next to the outputs and reuses it next time.
   A sidecar transcript the user already has goes in with `--srt <file>`.
+- A Pipeline AI Talks video always gets `--style pipeline` (the series theme). For anything
+  else, offer the styles once and keep the answer in the framing file (`"style": "<name>"`).
+  Music plays under the cards only; after hand-editing card seconds in a plan that uses a cue
+  style, run `clipbot score out/<name>/plan.json --style <name>` before rendering.
 - `--llm` asks the Anthropic API to pick the moments when `ANTHROPIC_API_KEY` is
   set (optional extra `llm`); otherwise the keyword-and-density heuristic runs and
   says so. Do not promise LLM selection without the key.

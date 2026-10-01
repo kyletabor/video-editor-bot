@@ -1,0 +1,22 @@
+{
+  "name": "pipeline",
+  "title": "Pipeline: funk organ theme",
+  "description": "The Pipeline AI Talks theme (\"Stank\"): swung drums, a syncopated bass and an overdriven organ. Music under the cards only: pickup and riff over the opening, a one-bar sting on every chapter card, and the tune's own ending under the last cards.",
+  "music": {
+    "kind": "cues",
+    "bpm": 104,
+    "beats_per_bar": 4,
+    "gain_db": -4.5,
+    "pickup": {"file": "music/pickup.flac", "beats": 2},
+    "vamp": [
+      {"file": "music/riff-1.flac", "resolved": "music/sting-1.flac"},
+      {"file": "music/riff-2.flac"},
+      {"file": "music/riff-3.flac", "resolved": "music/sting-3.flac"},
+      {"file": "music/riff-4.flac"}
+    ],
+    "stings": ["music/riff-4.flac", "music/sting-1.flac", "music/riff-2.flac", "music/sting-3.flac"],
+    "hold": {"file": "music/hold.flac", "seconds": 5.7},
+    "outro": {"file": "music/outro.flac", "seconds": 6.081, "lead_bars": 1}
+  },
+  "transition": {"kind": "dip", "seconds": 0.4}
+}

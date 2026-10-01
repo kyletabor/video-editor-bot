@@ -11,7 +11,9 @@ Captions come from the source's subtitle stream, `--srt FILE`, or
 labels unlabelled cues from a Gemini transcript (speakers.py). Word timings
 (`--words FILE`, or the `.words.json` that `--transcribe` writes) let `reel` cut
 fillers and long pauses without ever clipping a word (cuts.py). `--framing FILE`
-sets every card around the moments from one JSON file (framing.py).
+sets every card around the moments from one JSON file (framing.py). `--style NAME`
+picks a style pack: its music, scored to the cards, and its transition (styles.py,
+score.py; `clipbot styles` lists them).
 """
 
 from __future__ import annotations
@@ -34,9 +36,11 @@ from . import outline as outl
 from . import plan as planmod
 from . import probe as probemod
 from . import reel as reelmod
+from . import score as scoremod
 from . import select as sel
 from . import silence
 from . import speakers as spk
+from . import styles as stylesmod
 from . import summarize as summ
 from . import words as wordsmod
 
@@ -273,7 +277,12 @@ def cmd_reel(a: argparse.Namespace) -> int:
     # --framing FILE (framing.py) overrides the flags below wherever it says something; the
     # card seconds it sets are in place before the runtime line is computed.
     framing = framingmod.load_framing(a.framing) if a.framing else None
-    if framing and not a.music and (framing.music_gain_db is not None or framing.music_fade_seconds is not None):
+    # A style (styles.py) supplies the music and the transition; --style beats the framing file's
+    # "style", and an explicit --music / --transition / framing transition beats the style.
+    style_name = a.style or (framing.style if framing else None)
+    style = stylesmod.load(style_name) if style_name else None
+    has_music = bool(a.music) or bool(style and style.music)
+    if framing and not has_music and (framing.music_gain_db is not None or framing.music_fade_seconds is not None):
         print(f"framing: music settings in {a.framing} ignored (no --music)", file=sys.stderr)
     title = a.title or Path(a.source).stem
     date = a.date or datetime.date.fromtimestamp(Path(a.source).stat().st_mtime).isoformat()
@@ -281,9 +290,24 @@ def cmd_reel(a: argparse.Namespace) -> int:
     plan = reelmod.build_reel_plan(
         info, moments, out_dir=str(out_dir), title=title, date=date, preset=a.preset,
         captions_kind=captions_kind, srt_path=srt_path, summary_path=str(summary_path),
-        lead=a.lead_seconds, tail=a.tail_seconds, takeaways=takeaways, transition=a.transition,
+        lead=a.lead_seconds, tail=a.tail_seconds, takeaways=takeaways, transition=a.transition or "dip",
         music=planmod.contract_path(a.music) if a.music else None, framing=framing,
     )
+    if style:
+        reel = plan["output"]["reel"]
+        if style.transition and a.transition is None and not (framing and framing.transition_kind):
+            reel["transition"] = stylesmod.plan_transition(style)
+        if not a.music:  # scored last: the cues are cut to the cards and the transition as they now stand
+            music, note = scoremod.style_music(
+                plan, style, out_dir, gain_db=framing.music_gain_db if framing else None,
+                fade_seconds=framing.music_fade_seconds if framing else None,
+            )
+            if music:
+                reel["music"] = music
+            print(note, file=sys.stderr)
+            if framing and framing.music_fade_seconds is not None and style.music and style.music["kind"] == "cues":
+                print(f"framing: music_fade_seconds in {a.framing} ignored: a cue style carries its own fades",
+                      file=sys.stderr)
     planmod.validate(plan)
     title = plan["output"]["reel"]["intro"]["title"]  # what the viewer sees, framing applied
     out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
@@ -327,6 +351,42 @@ def cmd_reel(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_styles(a: argparse.Namespace) -> int:
+    """List the style packs: name, title, music and transition, then the description."""
+    styles = stylesmod.available()
+    if not styles:
+        print(f"no styles installed in {stylesmod.STYLES_DIR}")
+        return 0
+    for s in styles:
+        print(f"{s.name}\t{s.title}\t{s.music_label}\t{s.transition_label}")
+        if s.description:
+            print(f"\t{s.description}")
+    print('use: clipbot reel --style NAME ...  (or "style": "NAME" in the --framing file)')
+    return 0
+
+
+def cmd_score(a: argparse.Namespace) -> int:
+    """Re-score an existing plan: write its music for a style and point the plan at it.
+    For a plan whose cards or transition were edited by hand after `clipbot reel` wrote it."""
+    path = Path(a.plan)
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    planmod.validate(plan)  # a broken plan is the error to report, not whatever scoring trips over
+    reel = plan["output"].get("reel")
+    if not reel:
+        print("clipbot: the plan has no output.reel to score", file=sys.stderr)
+        return 2
+    music, note = scoremod.style_music(plan, stylesmod.load(a.style), path.parent, gain_db=a.gain_db)
+    if music:
+        reel["music"] = music
+    else:
+        reel.pop("music", None)
+    planmod.validate(plan)
+    path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    print(note)
+    print(f"plan updated: {path}")
+    return 0
+
+
 def cmd_audit_plan(a: argparse.Namespace) -> int:
     """Measure the audio on both sides of every segment edge (audit.py). Exit 1
     when any edge has speech on both sides, so the check works in a script."""
@@ -342,8 +402,14 @@ def render(plan_path: Path) -> int:
     uv = shutil.which("uv")
     if not uv:
         raise RuntimeError("uv not found on PATH; run: uv run --project render cliprender <plan> --root <repo>")
-    cmd = [uv, "run", "--project", "render", "cliprender", str(plan_path.resolve()),
-           "--root", str(planmod.REPO_ROOT), "--overwrite"]
+    cmd = [uv, "run", "--project", "render"]
+    try:
+        kind = json.loads(plan_path.read_text(encoding="utf-8"))["output"]["reel"]["transition"]["kind"]
+    except (OSError, KeyError, TypeError, ValueError):  # unreadable here: the renderer reports it properly
+        kind = None
+    if kind == "module":  # a code-drawn transition needs numpy in the renderer (render/pyproject.toml)
+        cmd += ["--extra", "styles"]
+    cmd += ["cliprender", str(plan_path.resolve()), "--root", str(planmod.REPO_ROOT), "--overwrite"]
     print("render: " + subprocess.list2cmdline(cmd), file=sys.stderr)
     print("render: probing the source and cutting clips; on a 1-2 h recording the first clip line "
           "can take a few minutes and the whole reel about ten", file=sys.stderr)
@@ -442,12 +508,24 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"air before the first word of a moment (default {cuts.LEAD_SECONDS})")
     pr.add_argument("--tail-seconds", type=float, default=cuts.TAIL_SECONDS,
                     help=f"air after the last word of a moment (default {cuts.TAIL_SECONDS})")
-    pr.add_argument("--transition", default="dip", choices=["cut", "dip", "dissolve"],
-                    help="join between cards and clips (default dip, 0.4 s)")
+    pr.add_argument("--transition", default=None, choices=["cut", "dip", "dissolve"],
+                    help="join between cards and clips (default: the style's, else dip 0.4 s)")
+    pr.add_argument("--style", default=None,
+                    help="style pack: music scored to the cards plus a transition (`clipbot styles` lists them; "
+                         "a style directory also works)")
     pr.add_argument("--music", default=None,
                     help="music bed under the cards (audio file you have the rights to; see contract/README.md)")
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)
+
+    pst = sub.add_parser("styles", help="list the style packs (assets/styles/)")
+    pst.set_defaults(fn=cmd_styles)
+
+    psc = sub.add_parser("score", help="write a style's music for an existing reel plan and update the plan")
+    psc.add_argument("plan", help="edit plan JSON with an output.reel (clipbot reel --out)")
+    psc.add_argument("--style", required=True, help="style name or directory")
+    psc.add_argument("--gain-db", type=float, default=None, help="music level under the cards (default: the style's)")
+    psc.set_defaults(fn=cmd_score)
 
     pa = sub.add_parser("audit-plan", help="measure the audio on both sides of every segment edge of a plan")
     pa.add_argument("plan", help="edit plan JSON (clipbot reel --out)")

@@ -1,0 +1,621 @@
+{
+  "about": "Where the card runs of a reel are: the renderer's arithmetic (render/cliprender/reel.py: timeline, frame_count, effective_transition, transition_frames, card_runs), which bot/clipbot/score.py mirrors to cut music cues to the runs. Both test suites assert these numbers, so neither copy can change alone. Times are exact fractions of a second. Regenerate only together with a deliberate change to the renderer.",
+  "cases": [
+    {
+      "name": "talk, dip",
+      "fps": "24/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card",
+              "seconds": 4
+            },
+            "opening": [
+              {
+                "title": "Card",
+                "seconds": 7
+              }
+            ],
+            "chapter_cards": "all",
+            "closing": [
+              {
+                "title": "Card",
+                "seconds": 7
+              },
+              {
+                "title": "Card",
+                "seconds": 7
+              }
+            ],
+            "outro": {
+              "title": "Card",
+              "seconds": 6
+            },
+            "transition": {
+              "kind": "dip",
+              "seconds": 0.4
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 136.05
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 222.85
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-03",
+            "takeaway": "Clip 3",
+            "segments": [
+              {
+                "start": 300.0,
+                "end": 313.03
+              }
+            ],
+            "card": {
+              "title": "Chapter 3",
+              "seconds": 3
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "14"
+        ],
+        [
+          "1201/24",
+          "3"
+        ],
+        [
+          "607/8",
+          "3"
+        ],
+        [
+          "1103/12",
+          "20"
+        ]
+      ]
+    },
+    {
+      "name": "talk, dissolve",
+      "fps": "24/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card",
+              "seconds": 4
+            },
+            "opening": [
+              {
+                "title": "Card",
+                "seconds": 7
+              }
+            ],
+            "chapter_cards": "all",
+            "closing": [
+              {
+                "title": "Card",
+                "seconds": 7
+              },
+              {
+                "title": "Card",
+                "seconds": 7
+              }
+            ],
+            "outro": {
+              "title": "Card",
+              "seconds": 6
+            },
+            "transition": {
+              "kind": "dissolve",
+              "seconds": 0.5
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 136.05
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 222.85
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-03",
+            "takeaway": "Clip 3",
+            "segments": [
+              {
+                "start": 300.0,
+                "end": 313.03
+              }
+            ],
+            "card": {
+              "title": "Chapter 3",
+              "seconds": 3
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "13"
+        ],
+        [
+          "1153/24",
+          "3"
+        ],
+        [
+          "583/8",
+          "3"
+        ],
+        [
+          "1055/12",
+          "19"
+        ]
+      ]
+    },
+    {
+      "name": "module transition at 29.97 fps, fractional cards",
+      "fps": "30000/1001",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card",
+              "seconds": 4.5
+            },
+            "opening": [
+              {
+                "title": "Card",
+                "seconds": 3.03
+              }
+            ],
+            "chapter_cards": "all",
+            "closing": [
+              {
+                "title": "Card",
+                "seconds": 5.5
+              }
+            ],
+            "outro": {
+              "title": "Card",
+              "seconds": 3.333
+            },
+            "transition": {
+              "kind": "module",
+              "seconds": 1.0,
+              "module": "contract/examples/transitions/wipe.py"
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 115.25
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 244.123
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 2.2
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "16016/1875"
+        ],
+        [
+          "653653/30000",
+          "11011/5000"
+        ],
+        [
+          "1982981/30000",
+          "47047/6000"
+        ]
+      ]
+    },
+    {
+      "name": "chapter_cards auto: only the clips that carry a card",
+      "fps": "25/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card"
+            },
+            "chapter_cards": "auto",
+            "outro": {
+              "title": "Card",
+              "seconds": 4
+            },
+            "transition": {
+              "kind": "dissolve",
+              "seconds": 0.4
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 120.0
+              }
+            ]
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 212.5
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-03",
+            "takeaway": "Clip 3",
+            "segments": [
+              {
+                "start": 300.0,
+                "end": 330.0
+              }
+            ]
+          },
+          {
+            "id": "clip-04",
+            "takeaway": "Clip 4",
+            "segments": [
+              {
+                "start": 400.0,
+                "end": 408.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 4",
+              "seconds": 5
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "3"
+        ],
+        [
+          "111/5",
+          "3"
+        ],
+        [
+          "1662/25",
+          "5"
+        ],
+        [
+          "1967/25",
+          "4"
+        ]
+      ]
+    },
+    {
+      "name": "chapter_cards none: intro and outro only",
+      "fps": "30/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card",
+              "seconds": 4
+            },
+            "opening": [
+              {
+                "title": "Card",
+                "seconds": 6
+              },
+              {
+                "title": "Card",
+                "seconds": 6
+              }
+            ],
+            "chapter_cards": "none",
+            "outro": {
+              "title": "Card",
+              "seconds": 6
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 120.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 212.5
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 3
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "16"
+        ],
+        [
+          "97/2",
+          "6"
+        ]
+      ]
+    },
+    {
+      "name": "no intro, no outro: the reel opens on a chapter card and ends on a clip",
+      "fps": "24/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "chapter_cards": "all",
+            "transition": {
+              "kind": "cut"
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 109.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 3
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 214.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 3
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "3"
+        ],
+        [
+          "12",
+          "3"
+        ]
+      ]
+    },
+    {
+      "name": "a dissolve longer than the short cards can afford is clamped",
+      "fps": "24/1",
+      "plan": {
+        "version": "1",
+        "source": {
+          "path": "talk.mp4"
+        },
+        "output": {
+          "dir": "out/x",
+          "reel": {
+            "filename": "reel.mp4",
+            "intro": {
+              "title": "Card",
+              "seconds": 1
+            },
+            "opening": [
+              {
+                "title": "Card",
+                "seconds": 2
+              }
+            ],
+            "chapter_cards": "all",
+            "closing": [
+              {
+                "title": "Card",
+                "seconds": 1.5
+              }
+            ],
+            "outro": {
+              "title": "Card",
+              "seconds": 2
+            },
+            "transition": {
+              "kind": "dissolve",
+              "seconds": 1.5
+            }
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-01",
+            "takeaway": "Clip 1",
+            "segments": [
+              {
+                "start": 100.0,
+                "end": 120.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 1",
+              "seconds": 2
+            }
+          },
+          {
+            "id": "clip-02",
+            "takeaway": "Clip 2",
+            "segments": [
+              {
+                "start": 200.0,
+                "end": 212.0
+              }
+            ],
+            "card": {
+              "title": "Chapter 2",
+              "seconds": 1
+            }
+          }
+        ]
+      },
+      "runs": [
+        [
+          "0",
+          "49/12"
+        ],
+        [
+          "139/6",
+          "1"
+        ],
+        [
+          "141/4",
+          "73/24"
+        ]
+      ]
+    }
+  ]
+}

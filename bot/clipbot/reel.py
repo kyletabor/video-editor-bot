@@ -733,7 +733,7 @@ def build_reel_plan(
         "chapter_cards": "all",
         "outro": fr.outro_card() or outro_card(),
         "transition": {"kind": fr.transition_kind or transition, "seconds": fr.transition_seconds or TRANSITION_SECONDS},
-        "audio_fade_seconds": AUDIO_FADE_SECONDS,
+        "audio_fade_seconds": fr.audio_fade_seconds if fr.audio_fade_seconds is not None else AUDIO_FADE_SECONDS,
     }
     if fr.outro_seconds is not None:
         reel["outro"]["seconds"] = fr.outro_seconds
