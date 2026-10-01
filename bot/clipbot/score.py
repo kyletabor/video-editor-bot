@@ -44,7 +44,10 @@ MIN_HOLD = Fraction(3, 5)  # the held chord needs at least this long to read as 
 HOLD_FADE = Fraction(1, 2)  # ...and fades over this much of its end
 END_MARGIN = Fraction(1, 5)  # the outro is finished this long before the reel is
 EDGE = Fraction(1, 25)  # a 40 ms fade wherever a ring-out is cut at the end of a run
-CUE_FADE_SECONDS = 0.05  # the plan's music.fade_seconds: a cue starts on a hit, so no slow fade-in
+# The plan's music.fade_seconds. A cue starts on a drum hit and carries its own fades (the held
+# chord's, and EDGE at the end of every run), so the renderer adds none: even 50 ms of fade-in
+# takes the attack off the downbeat.
+CUE_FADE_SECONDS = 0.0
 PAD = Fraction(1)  # silence after the last cue, so the renderer never runs out of bed
 OVERLAPPING = ("dissolve", "module")  # transitions whose bridge takes frames from both sides
 

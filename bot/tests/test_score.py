@@ -240,7 +240,7 @@ def test_cli_reel_with_a_cue_style_writes_the_cues_and_points_the_plan_at_them(t
     assert rc == 0, err
     reel = json.loads(out.read_text(encoding="utf-8"))["output"]["reel"]
     cues = tmp_path / "music-cues.wav"
-    assert reel["music"] == {"path": cues.as_posix(), "under": "cards", "fade_seconds": 0.05, "loop": False,
+    assert reel["music"] == {"path": cues.as_posix(), "under": "cards", "fade_seconds": 0.0, "loop": False,
                              "gain_db": -4.5}
     assert reel["transition"] == {"kind": "dip", "seconds": 0.4}
     assert "style pipeline:" in err and "cues over" in err

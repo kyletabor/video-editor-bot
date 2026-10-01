@@ -1,0 +1,7 @@
+{
+  "name": "future",
+  "title": "Future: token stream and a light pulse",
+  "description": "The Signal bed, with joins that write the next shot onto the screen in rows of bright cells, the way a model streams text. For product and AI explainers. The transition is drawn in code, so rendering takes a few seconds more per join.",
+  "music": {"kind": "bed", "file": "../signal/music/signal.mp3", "gain_db": -8, "fade_seconds": 1.0},
+  "transition": {"kind": "module", "module": "../transitions/token_stream.py", "seconds": 1.0}
+}

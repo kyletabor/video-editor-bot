@@ -121,3 +121,33 @@ def test_cli_reel_bed_style_from_the_framing_file_and_what_overrides_it(tmp_path
     assert cli.main(base) == 0
     reel = json.loads(out.read_text(encoding="utf-8"))["output"]["reel"]
     assert "music" not in reel and reel["transition"] == {"kind": "dip", "seconds": 0.4}
+
+
+@needs_demo
+def test_cli_reel_future_style_names_its_transition_module_and_render_asks_for_numpy(tmp_path, monkeypatch):
+    import shutil
+    import subprocess as sp
+
+    from tests.test_reel import _FakeProc
+
+    out = tmp_path / "plan.json"
+    rc = cli.main(["reel", "--source", str(DEMO_MP4), "--minutes", "0.5", "--out", str(out), "--style", "future",
+                   "--keep-fillers"])
+    assert rc == 0
+    plan = json.loads(out.read_text(encoding="utf-8"))
+    validate(plan)  # the contract knows kind module
+    reel = plan["output"]["reel"]
+    assert reel["transition"] == {"kind": "module", "seconds": 1.0, "module": "assets/styles/transitions/token_stream.py"}
+    assert reel["music"]["path"] == "assets/styles/signal/music/signal.mp3"
+    assert (REPO_ROOT / reel["transition"]["module"]).is_file()
+
+    # a module transition is drawn with numpy, an extra of the renderer: --render must ask for it
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(sp, "Popen", lambda cmd, **kw: _FakeProc(cmd, **kw))
+    assert cli.render(out) == 0
+    cmd, _ = _FakeProc.calls[-1]
+    assert cmd[:7] == ["/usr/bin/uv", "run", "--project", "render", "--extra", "styles", "cliprender"]
+    reel["transition"] = {"kind": "dip", "seconds": 0.4}
+    out.write_text(json.dumps(plan), encoding="utf-8")
+    assert cli.render(out) == 0
+    assert "--extra" not in _FakeProc.calls[-1][0]
