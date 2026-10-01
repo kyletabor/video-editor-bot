@@ -188,7 +188,9 @@ def encode_module_bridge(
                             f"{name}: the {end} of its neighbour ended at frame {index} of "
                             f"{frames}: {log_tail(log) or 'no more frames'}"
                         )
-                    pair.append(np.frombuffer(raw, np.uint8).reshape(height, width, 3))
+                    # A copy, so the module may draw into its inputs: a buffer view is
+                    # read-only, and the lab (scripts/style_lab.py) hands out writable frames.
+                    pair.append(np.frombuffer(raw, np.uint8).reshape(height, width, 3).copy())
                 state["frame_index"] = index
                 try:
                     frame = render(pair[0], pair[1], bridge_progress(index, frames), state)

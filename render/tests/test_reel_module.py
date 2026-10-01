@@ -315,6 +315,25 @@ def test_bridge_hands_render_true_colours_and_returns_them_unshifted(tmp_path):
         assert frame == pytest.approx(expected, abs=1)
 
 
+IN_PLACE = """
+def render(a, b, t, state):
+    if t >= 0.5:
+        a[:] = b  # draw into the outgoing frame: the lab hands out writable frames, so must we
+    return a
+"""
+
+
+@needs_tools
+@needs_numpy
+def test_render_may_draw_into_the_frames_it_is_given(tmp_path):
+    _, output = bridge(tmp_path, IN_PLACE)
+    drawn = plane_means(output)
+    tail = plane_means(tmp_path / "piece-00-tail.y4m")[0]
+    head = plane_means(tmp_path / "piece-01-head.y4m")[0]
+    for frame, expected in zip(drawn, [tail, tail, head, head]):
+        assert frame == pytest.approx(expected, abs=1)
+
+
 @needs_tools
 @needs_numpy
 def test_single_frame_bridge_is_drawn_at_the_midpoint(tmp_path):
