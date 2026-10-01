@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kyletabor/video-editor-bot/contract/edit-plan.schema.json",
   "title": "Edit plan",
-  "description": "The interface between bot/ (produces) and render/ (consumes). A plan is one source file, one output spec, and an ordered list of clips. Each clip is a keep-list of time segments from the source, concatenated in order. v1.1 adds an optional reel; v1.2 adds music, transitions, opening and closing cards: the renderer also concatenates every clip, with optional slide cards, into one summary video. Nothing else is implied: no effects, no transitions, no re-encoding choices beyond what output.* states.",
+  "description": "The interface between bot/ (produces) and render/ (consumes). A plan is one source file, one output spec, and an ordered list of clips. Each clip is a keep-list of time segments from the source, concatenated in order. v1.1 adds an optional reel; v1.2 adds music, transitions, opening and closing cards; v1.3 adds transitions drawn by a Python module: the renderer also concatenates every clip, with optional slide cards, into one summary video. Nothing else is implied: no effects, no transitions, no re-encoding choices beyond what output.* states.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -225,14 +225,15 @@
             "transition": {
               "type": "object",
               "additionalProperties": false,
-              "description": "v1.2. How one segment joins the next. cut = hard cut (v1.1 behaviour). dip = fade to black and back. dissolve = crossfade. Applied at every join between cards and clips.",
+              "description": "v1.2. How one segment joins the next. cut = hard cut (v1.1 behaviour). dip = fade to black and back. dissolve = crossfade. module (v1.3) = a dissolve whose picture is drawn by the Python file named in `module`. Applied at every join between cards and clips.",
               "properties": {
                 "kind": {
                   "type": "string",
                   "enum": [
                     "cut",
                     "dip",
-                    "dissolve"
+                    "dissolve",
+                    "module"
                   ],
                   "default": "cut"
                 },
@@ -241,6 +242,34 @@
                   "minimum": 0.1,
                   "maximum": 1.5,
                   "default": 0.4
+                },
+                "module": {
+                  "type": "string",
+                  "minLength": 4,
+                  "pattern": "\\.py$",
+                  "description": "v1.3. Repo-root-relative or absolute path to a Python file exposing render(a, b, t, state): a and b are HxWx3 uint8 RGB numpy arrays (outgoing and incoming frame at the same instant), t runs 0.0 to 1.0 over the transition, state is a dict that lives for one join; returns an HxWx3 uint8 RGB array. Required exactly when kind is module. The plan's `seconds` decides the length; a SECONDS constant in the file is advisory."
+                }
+              },
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "module"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "module"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "module"
+                  ]
                 }
               }
             },

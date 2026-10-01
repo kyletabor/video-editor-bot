@@ -5,7 +5,7 @@ The only interface between `bot/` (Kyle's lane, produces a plan) and `render/`
 by the other side.
 
 - [`edit-plan.schema.json`](edit-plan.schema.json) — JSON Schema 2020-12, the
-  source of truth. Currently **v1.2**: v1 plus an optional reel, music, transitions and opening/closing cards (see below).
+  source of truth. Currently **v1.3**: v1 plus an optional reel, music, transitions (built in or drawn by a Python module) and opening/closing cards (see below).
 - [`examples/one-clip-trim.json`](examples/one-clip-trim.json) — minimum viable
   plan: one clip, one segment, embedded captions, 16:9.
 - [`examples/two-clips-concat-vertical.json`](examples/two-clips-concat-vertical.json)
@@ -14,6 +14,9 @@ by the other side.
 - [`examples/reel-with-cards.json`](examples/reel-with-cards.json) — v1.1: two
   clips assembled into one summary video with an intro slide, one chapter card
   and an outro.
+- [`examples/reel-with-module-transition.json`](examples/reel-with-module-transition.json)
+  — v1.3: the same reel with every join drawn by
+  [`examples/transitions/wipe.py`](examples/transitions/wipe.py).
 
 ## Mental model
 
@@ -69,6 +72,32 @@ slide, with sparse explainer slides between sections.
 - Example: [`examples/reel-with-music.json`](examples/reel-with-music.json).
   The base timeline and all v1.1 fields are unchanged; a renderer that ignores
   v1.2 fields still produces a valid v1.1 reel.
+
+### v1.3 addition: code-drawn transitions (2026-10-01)
+
+- `output.reel.transition {kind: module, module: <path>.py, seconds}`: every join is
+  drawn by a Python file. `module` is repo-root-relative or absolute, and is required
+  exactly when `kind` is `module` (and rejected with any other kind).
+- Timing is a dissolve's: the two neighbours overlap by `seconds` (0.1 to 1.5, in whole
+  frames, shortened when a segment cannot hold it) and the audio cross-fades. Only the
+  picture differs.
+- The file exposes `render(a, b, t, state)`:
+  - `a`, `b`: HxWx3 uint8 RGB numpy arrays, the outgoing and the incoming frame at the
+    same instant (both keep moving).
+  - `t`: 0.0 on the first frame of the join, 1.0 on the last; 0.5 when the join is a
+    single frame. Return `a` at 0 and `b` at 1, or the join will pop.
+  - `state`: a dict that lives for one join, pre-filled with `size` (W, H), `fps`,
+    `n_frames`, `seed` (7) and `frame_index`. Precompute into it on the first call; use
+    `seed` for every random choice so a reel renders the same twice.
+  - Returns an HxWx3 uint8 RGB array. Anything else, or an exception, fails the reel
+    with the module's path and the frame index.
+- A `SECONDS` constant in the file is advisory; the plan's `seconds` decides.
+- The module may import numpy, scipy, Pillow and the standard library. numpy and scipy
+  are an optional extra of the renderer:
+  `uv run --project render --extra styles cliprender plan.json`.
+- A module is code the renderer runs with the operator's rights. Name only files you
+  would run yourself; the bot must never take a module path from untrusted input.
+- Example: [`examples/reel-with-module-transition.json`](examples/reel-with-module-transition.json).
 
 ## Renderer obligations (what `render/` must do)
 
@@ -130,6 +159,8 @@ Bump `version` only for breaking changes. Add optional fields freely, with
 defaults, and update the examples. The other lane reviews the PR.
 
 Changelog
+- v1.3 (2026-10-01, veb-iyl): `output.reel.transition.kind: module` with `transition.module`,
+  a Python file that draws every join. Backward compatible.
 - v1.2 (2026-09-26, Kyle's agent): `output.reel.{opening,closing,music,transition,audio_fade_seconds}`. Backward compatible.
 - v1.1 (2026-09-25, Kyle's agent under Kyle's authority): `output.reel`,
   `clips[].card`, `$defs.card`. Backward compatible.

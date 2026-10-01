@@ -21,6 +21,11 @@ that behaves the same on FFmpeg 4.4 and 7 (`fade`, `afade`, `xfade`, `atrim`, `a
 `amix`, `tpad`, `apad`), which keeps the ARM Pi with the Ubuntu 4.4.2 build a first-class
 renderer. The mix is kept from clipping by arithmetic (`headroom_gain`) rather than a
 limiter, because FFmpeg 4.4's `alimiter` delays audio by its look-ahead and drops the tail.
+
+A module transition (contract v1.3) is a dissolve in everything but the picture of its
+bridges: the same overlap, the same audio cross-fade, the same raw ends split off each piece,
+with the frames drawn by the plan's Python module (`transitions.encode_module_bridge`)
+instead of `xfade`.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from pathlib import Path
 
 from .cards import Card, chapter_footer, write_card_png
 from .media import RenderError, warn
+from .transitions import encode_module_bridge, load_transition
 
 MAX_RECOMMENDED_SECONDS = 600
 # Card segments and clips are each exact to well under a frame; junction slop comes from AAC
@@ -40,6 +46,9 @@ TOLERANCE_PER_SEGMENT = 0.2
 # Any of these in `output.reel` switches the reel from the v1.1 graph to the v1.2 one; the
 # schema defaults then apply to the fields that are absent (transition cut, 0.15 s audio fades).
 V12_FIELDS = ("opening", "closing", "music", "transition", "audio_fade_seconds")
+# Transitions in which the two neighbours of a join play at once: each consumes its length
+# from both sides, is rendered as a bridge, and lets speech sound over a card's music.
+OVERLAPPING = ("dissolve", "module")
 # The mix is scaled so that the worst-case speech-plus-music peak stays this far below full
 # scale. AAC ringing adds a few tenths of a dB on decode and still cannot reach 0 dBFS.
 HEADROOM_DB = 1.0
@@ -86,6 +95,8 @@ class Style:
     transition_seconds: Fraction = Fraction("0.4")
     audio_fade: Fraction = Fraction("0.15")
     music: Music | None = None
+    # The Python file that draws the bridges when `transition` is "module".
+    module: Path | None = None
 
 
 def reel_style(reel, resolve):
@@ -114,6 +125,7 @@ def reel_style(reel, resolve):
         Fraction(str(transition.get("seconds", 0.4))),
         Fraction(str(reel.get("audio_fade_seconds", 0.15))),
         music,
+        resolve(transition["module"]) if transition.get("kind") == "module" else None,
     )
 
 
@@ -203,14 +215,15 @@ def audio_chain(index, audio):
 def effective_transition(style, durations):
     """Transition length the segments can afford, or 0 when there is nothing to join.
 
-    A dip needs each segment to hold its two half-fades (d >= s). A dissolve consumes s from
-    both sides of a join, so a segment between two joins needs d >= 2s and the first and last
-    need d >= s. A 1 s card with a 1.5 s transition is a legal plan, so clamp rather than
-    reject; the renderer warns when it does.
+    A dip needs each segment to hold its two half-fades (d >= s). A dissolve (and a module
+    transition, which is timed like one) consumes s from both sides of a join, so a segment
+    between two joins needs d >= 2s and the first and last need d >= s. A 1 s card with a
+    1.5 s transition is a legal plan, so clamp rather than reject; the renderer warns when it
+    does.
     """
     if style is None or style.transition == "cut" or len(durations) < 2:
         return Fraction(0)
-    if style.transition == "dissolve":
+    if style.transition in OVERLAPPING:
         limit = min([durations[0], durations[-1], *(d / 2 for d in durations[1:-1])])
     else:
         limit = min(durations)
@@ -686,7 +699,7 @@ def headroom_gain(tools, style, clips):
         if peak is not None:
             speech = max(speech, db_to_linear(peak))
     with_speech = music.duck if music.under == "all" else 0.0
-    if style.transition == "dissolve":
+    if style.transition in OVERLAPPING:
         with_speech = max(with_speech, music.gain)
     bound = music.gain
     if with_speech > 0:
@@ -724,23 +737,58 @@ def encode_piece(tools, workspace, name, inputs, graph, fps, cfr_flags, graph_fl
 
 
 def encode_bridge(
-    tools, workspace, name, outgoing, incoming, frames, samples, fps, cfr_flags, graph_flag, audio
+    tools,
+    workspace,
+    name,
+    outgoing,
+    incoming,
+    frames,
+    samples,
+    fps,
+    cfr_flags,
+    graph_flag,
+    audio,
+    *,
+    dimensions=None,
+    module=None,
+    draw=None,
 ):
     """Two small FFmpeg processes per dissolve: the tail of `outgoing` into the head of
-    `incoming`, video (`xfade`) and audio (linear cross-fade), exactly `frames`/`samples`."""
-    script = workspace / f"{name}.txt"
-    script.write_text(bridge_video_graph(frames, fps), encoding="utf-8")
-    args = [
-        "-y",
-        "-i",
-        f"{outgoing}-tail.y4m",
-        "-i",
-        f"{incoming}-head.y4m",
-        graph_flag,
-        script.name,
-    ]
-    args += ["-map", "[video]", *piece_encoder_flags(fps, cfr_flags), f"{name}.mp4"]
-    tools.encode(args, cwd=workspace)
+    `incoming`, video (`xfade`) and audio (linear cross-fade), exactly `frames`/`samples`.
+
+    With `draw` (the `render` of the transition module at `module`) the video is drawn by
+    it from the same two ends instead, and encoded with the same settings; the audio is
+    the dissolve's either way."""
+    if draw is not None:
+        encode_module_bridge(
+            tools,
+            workspace,
+            name,
+            outgoing,
+            incoming,
+            frames,
+            fps,
+            dimensions,
+            draw,
+            module,
+            matrix=CARD_MATRIX,
+            tags=COLOR_TAGS,
+            encoder_flags=piece_encoder_flags(fps, cfr_flags),
+        )
+    else:
+        script = workspace / f"{name}.txt"
+        script.write_text(bridge_video_graph(frames, fps), encoding="utf-8")
+        args = [
+            "-y",
+            "-i",
+            f"{outgoing}-tail.y4m",
+            "-i",
+            f"{incoming}-head.y4m",
+            graph_flag,
+            script.name,
+        ]
+        args += ["-map", "[video]", *piece_encoder_flags(fps, cfr_flags), f"{name}.mp4"]
+        tools.encode(args, cwd=workspace)
     if audio:
         script = workspace / f"{name}-audio.txt"
         script.write_text(bridge_audio_graph(samples, int(audio["sample_rate"])), encoding="utf-8")
@@ -807,6 +855,7 @@ def render_reel(
     filename,
     title,
     style=None,
+    draw=None,
 ):
     """Draw the cards, conform every piece, bridge the dissolves, mix the music, join, verify.
 
@@ -816,7 +865,12 @@ def render_reel(
     pieces are then conformed with no v1.2 filter at all (no fades, no transition, no music):
     the v1.1 reel is the plain join of its pieces. No FFmpeg process here holds more than one
     piece's decoder and encoder, or a few seconds of audio, whatever the reel's length.
+    `draw` is the already loaded `render` of `style.module`; it is loaded here when the
+    caller has not (the caller loads it early, so a broken module fails before any encode).
     """
+    module = style.module if style is not None else None
+    if module is not None and draw is None:
+        draw = load_transition(module)
     workspace = job / "_reel"
     workspace.mkdir()
     rate = int(audio["sample_rate"]) if audio else 0
@@ -839,10 +893,11 @@ def render_reel(
     transition = effective_transition(style, durations)
     if style is not None and 0 < transition < style.transition_seconds:
         warn(
-            f"reel {style.transition} shortened from {float(style.transition_seconds):g}s to "
+            f"reel {'transition' if module else style.transition} shortened from "
+            f"{float(style.transition_seconds):g}s to "
             f"{float(transition):g}s so that every segment can hold it"
         )
-    dissolve = style is not None and style.transition == "dissolve" and transition > 0
+    dissolve = style is not None and style.transition in OVERLAPPING and transition > 0
     half = transition / 2 if style is not None and style.transition == "dip" else Fraction(0)
     # Everything below lives on the frame grid: whole frames per piece, the matching sample
     # counts, and a dissolve of whole frames, so that the joins meet exactly.
@@ -910,6 +965,9 @@ def render_reel(
                 cfr_flags,
                 graph_flag,
                 audio,
+                dimensions=dimensions,
+                module=module,
+                draw=draw,
             )
             segments.append(Segment(joint, bridge, bridge_samples))
         segments.append(

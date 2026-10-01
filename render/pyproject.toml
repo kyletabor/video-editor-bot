@@ -7,6 +7,8 @@ dependencies = ["jsonschema>=4.23,<5", "pillow>=10.1,<13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+# Only a plan with a module transition needs these; the renderer imports numpy lazily.
+styles = ["numpy>=1.26", "scipy>=1.11"]
 
 [project.scripts]
 cliprender = "cliprender.cli:main"
