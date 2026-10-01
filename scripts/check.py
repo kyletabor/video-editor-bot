@@ -184,8 +184,10 @@ def check_render() -> None:
     if not (ROOT / "render" / "pyproject.toml").is_file():
         print("renderer acceptance: SKIPPED (veb-2rq CLI has not landed; environment check is separate)", flush=True)
         return
-    print(run(uv(), "run", "--quiet", "--project", "render", "--extra", "dev", "python",
-              "-m", "pytest", "-q", "render/tests", timeout=600), end="", flush=True)
+    # The styles extra (numpy, scipy) is what a module transition needs; without it those
+    # tests would skip. The CLI smoke below stays on the base install, which must keep working.
+    print(run(uv(), "run", "--quiet", "--project", "render", "--extra", "dev", "--extra", "styles",
+              "python", "-m", "pytest", "-q", "render/tests", timeout=600), end="", flush=True)
     with tempfile.TemporaryDirectory(prefix="veb renderer smoke ") as directory:
         temp = Path(directory)
         source = generate_fixture(temp)

@@ -24,6 +24,7 @@ from .reel import (
     render_reel,
     timeline,
 )
+from .transitions import load_transition
 
 BOUNDS = {"internal": (15, 120), "linkedin": (15, 90), "shorts": (15, 60), "email": (15, 60)}
 # Containers whose keyframe index makes an input seek land exactly and whose audio timestamps
@@ -661,12 +662,19 @@ def render_plan(
     music = style.music.path if style is not None and style.music is not None else None
     if music:
         require_file(music, "music bed")
+    # A module transition is loaded now for the same reason: a missing or broken module, or a
+    # renderer installed without numpy, must not cost the clips' encodes before it shows.
+    module = style.module if style is not None else None
+    draw = None
+    if module:
+        require_file(module, "transition module")
+        draw = load_transition(module)
     summary_dest = output / summary.name if summary else None
     if summary and summary != summary_dest:
         destinations.append(summary_dest)
     elif summary_dest and summary_dest in destinations:
         raise RenderError("Summary path collides with a clip output")
-    protected = {source, plan_path, caption_source, summary, music}
+    protected = {source, plan_path, caption_source, summary, music, module}
     if len(set(destinations)) != len(destinations):
         raise RenderError("Output filenames collide with one another")
     for dest in destinations:
@@ -812,6 +820,7 @@ def render_plan(
                     reel_dest.name,
                     reel.get("intro", {}).get("title", reel_dest.stem),
                     style=style,
+                    draw=draw,
                 )
             except (RenderError, ValueError, OSError) as exc:
                 raise RenderError(f"Reel: {exc}; no outputs from this run published") from exc
