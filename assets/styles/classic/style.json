@@ -1,0 +1,7 @@
+{
+  "name": "classic",
+  "title": "Classic: 1920s Kansas City jazz",
+  "description": "Bennie Moten's Kansas City Orchestra, \"South\" (1924, public domain; see assets/music/LICENSE). The bed the first reels used.",
+  "music": {"kind": "bed", "file": "../../music/bed.mp3", "gain_db": -8, "fade_seconds": 1.0},
+  "transition": {"kind": "dip", "seconds": 0.4}
+}

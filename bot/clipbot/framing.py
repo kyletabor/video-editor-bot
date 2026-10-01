@@ -16,8 +16,10 @@ the framing file overrides them wherever it says something.
       "takeaways": ["...", "..."],             -> closing cards, 4 lines each (<= 12)
       "outro": {"title": "...", "lines": ["..."]},
       "opening_seconds": 7, "closing_seconds": 7, "outro_seconds": 6,   -> per card, 1-10
-      "music_gain_db": -14, "music_fade_seconds": 1.0,   -> output.reel.music (needs --music)
-      "transition": "dip"  |  {"kind": "dissolve", "seconds": 0.5}
+      "music_gain_db": -14, "music_fade_seconds": 1.0,   -> output.reel.music (needs --music or a style)
+      "audio_fade_seconds": 0.2,               -> clip audio fade at every cut, 0-1
+      "transition": "dip"  |  {"kind": "dissolve", "seconds": 0.5},
+      "style": "pipeline"                      -> the style pack (styles.py); --style overrides it
     }
 
 Everything is optional; unknown keys, wrong types and text over the contract's
@@ -38,11 +40,13 @@ TRANSITIONS = ("cut", "dip", "dissolve")
 CARD_SECONDS_RANGE = (1.0, 10.0)  # contract: card.seconds
 MUSIC_GAIN_RANGE = (-40.0, 0.0)  # contract: music.gain_db
 MUSIC_FADE_RANGE = (0.0, 5.0)  # contract: music.fade_seconds
+AUDIO_FADE_RANGE = (0.0, 1.0)  # contract: audio_fade_seconds
 TRANSITION_RANGE = (0.1, 1.5)  # contract: transition.seconds
 MAX_CLOSING_CARDS = 3  # contract: closing maxItems
 KEYS = (
     "title", "date", "what_you_will_learn", "takeaways", "outro", "opening_seconds", "closing_seconds",
-    "outro_seconds", "music_gain_db", "music_fade_seconds", "transition",
+    "outro_seconds", "music_gain_db", "music_fade_seconds", "transition", "style",
+    "audio_fade_seconds",
 )
 
 
@@ -61,6 +65,8 @@ class Framing:
     music_fade_seconds: float | None = None
     transition_kind: str | None = None
     transition_seconds: float | None = None
+    style: str | None = None
+    audio_fade_seconds: float | None = None
 
     def outro_card(self) -> dict | None:
         """The outro card the file asks for, or None when it says nothing about it."""
@@ -141,6 +147,10 @@ def parse_framing(data, where: str = "framing") -> Framing:
         out["transition_kind"] = tr["kind"]
         if tr.get("seconds") is not None:
             out["transition_seconds"] = _number(tr["seconds"], f"{where}.transition.seconds", *TRANSITION_RANGE)
+    if "audio_fade_seconds" in data:
+        out["audio_fade_seconds"] = _number(data["audio_fade_seconds"], f"{where}.audio_fade_seconds", *AUDIO_FADE_RANGE)
+    if "style" in data:
+        out["style"] = _text(data["style"], f"{where}.style", TITLE_LIMIT)
     return Framing(**out)
 
 

@@ -76,6 +76,9 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
 - Leave off `--render` to get only `plan.json`, `moments.json` and `summary.md`.
   Review or hand-edit the plan, then render it:
   `uv run --project render cliprender out/q3-review/plan.json --root .`
+- Add `--style NAME` for music and a transition: `uv run --project bot clipbot styles` lists
+  them. Music plays under the cards only, cut so it starts with a card and lands on an ending
+  ([docs/styles.md](docs/styles.md)). Pipeline AI Talks videos use `--style pipeline`.
 
 ### 4. Pick the moments yourself
 
@@ -158,8 +161,9 @@ command on every OS (`make check` is an alias). Details, per-check runs and the
 |---|---|
 | Summary reel from a captioned or transcribed recording (`clipbot reel`) | Filler-word and long-pause removal inside clips |
 | Session outline and hand-picked moments (`clipbot outline`, `--moments`) | LLM moment selection by default (today: keyword and density scoring; `--llm` opt-in via the Anthropic API) |
-| One-clip plans for a request; presets `internal`, `linkedin`, `shorts`, `email` | PDF export of the summary |
-| Frame-accurate cuts, burned-in captions, intro/chapter/outro cards, 16:9 or 9:16 | Transitions and music between sections |
+| One-clip plans for a request; presets `internal`, `linkedin`, `shorts`, `email` | |
+| Frame-accurate cuts, burned-in captions, intro/chapter/outro cards, 16:9 or 9:16 | PDF export of the summary |
+| Styles: music scored to the cards and a transition, by name (`--style`, `clipbot styles`); new ones written as code ([docs/styles.md](docs/styles.md)) | |
 | Executive summary and transcript in Markdown | |
 | Windows, macOS, Linux/ARM; CI runs the gate on Ubuntu and Windows | |
 

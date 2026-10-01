@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clipbot style"
+  short_description: "Choose a reel's style, or make a new one: music and transitions written as code"
+  default_prompt: "Use $clipbot-style to pick a style for a reel or to create a new style pack (synthesized music, code-drawn transitions) for the repository's clipbot."

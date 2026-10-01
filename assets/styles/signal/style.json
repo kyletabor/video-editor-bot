@@ -1,0 +1,7 @@
+{
+  "name": "signal",
+  "title": "Signal: light pulse",
+  "description": "Two interlocking pluck patterns over a sine bass, 96 BPM, A minor. Forward motion without a drum kit. A bed under the cards, faded at the edges.",
+  "music": {"kind": "bed", "file": "music/signal.mp3", "gain_db": -8, "fade_seconds": 1.0},
+  "transition": {"kind": "dissolve", "seconds": 0.5}
+}
