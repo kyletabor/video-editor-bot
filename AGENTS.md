@@ -52,7 +52,8 @@ command on its own.
 5. **Build** only in your lane's folder. Commit messages start with the task id.
 6. **Open the PR:** `git push -u origin HEAD`, then
    `gh pr create --title "[<id>] <summary>" --body "Task <id>"`.
-7. **Review** under Kyle's dev process (the `dev-process` skill), sized to the change:
+7. **Review** under Kyle's dev process (his `dev-process` Claude Code plugin; this step is
+   the part that applies, so follow it as written if you don't have the plugin), sized to the change:
    a code review by a separate agent (not the builder) that ends in APPROVE, and for
    anything beyond a small, risk-free change an independent verification on real inputs
    that ends in PASS. Fix and re-review at most twice. Put the verdicts and evidence in

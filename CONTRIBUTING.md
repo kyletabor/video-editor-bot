@@ -208,7 +208,7 @@ Then paste this into your agent (Kyle's lane is `lane:bot`, Ramsey's is `lane:re
 
 ---
 
-## 4. The loop and the handoff protocol
+## 4. The loop, review and merge
 
 ```
 sync → pick from own lane → claim + push → branch → build → PR
@@ -221,10 +221,12 @@ it's pushed. Branches are `<lane>/<bead-id>-<slug>`, PR titles start with the be
 id, and `uv run --locked scripts/check.py` must be green before the PR opens.
 
 **Review and merge.** The two-agent experiment, where each lane's agent approved
-the other's PRs, is over. Every PR is now reviewed under Kyle's dev process (the
-`dev-process` skill), sized to the change: a code review by a separate agent (not
-the one that built it) that ends in APPROVE, and for anything beyond a small,
-risk-free change an independent verification on real inputs that ends in PASS.
+the other's PRs, is over. Every PR is now reviewed under Kyle's dev process (his
+`dev-process` Claude Code plugin; what follows is the part that applies here),
+sized to the change: a code review by a separate agent (not the one that built
+it) that ends in APPROVE, and for anything beyond a small, risk-free change an
+independent verification on real inputs that ends in PASS. Fix and re-review at
+most twice.
 The verdicts and evidence go in the PR. Once CI is green and both have passed, the
 author merges its own PR (squash, delete the branch), closes the bead with the
 evidence, and puts anything left over in a new bead.
