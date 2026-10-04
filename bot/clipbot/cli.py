@@ -282,7 +282,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         try:
             copy, _ = redactmod.run(
                 info.path, a.redact, shown, out_dir, terms_file=a.redact_terms, every=a.redact_every,
-                duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
+                duration=info.duration_seconds, ocr=a.redact_ocr, log=lambda msg: print(msg, file=sys.stderr),
             )
         except Exception:
             if out_path.is_file():
@@ -442,7 +442,7 @@ def cmd_redact(a: argparse.Namespace) -> int:
         every = a.every if a.every is not None else 2.0
     copy, redactions = redactmod.run(
         info.path, a.redact, spans, out_dir, terms_file=a.terms, every=every,
-        duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
+        duration=info.duration_seconds, ocr=a.ocr, log=lambda msg: print(msg, file=sys.stderr),
     )
     for r in redactions:
         print(f"{_hms(r.start)}-{_hms(r.end)}\t{r.box[0]},{r.box[1]} {r.box[2]}x{r.box[3]}\t{r.why or 'manual'}")
@@ -509,13 +509,19 @@ def add_caption_args(p: argparse.ArgumentParser, speakers: bool = True) -> None:
                        help="subtract this from the notes' clock (seconds or h:mm:ss) when it started before the video")
 
 
+OCR_HELP = ("OCR for auto/text: vision (Apple Vision: macOS and the vision extra; reads small shared-screen "
+            "text), tesseract (on PATH), or auto (default): vision when it loads, else tesseract")
+
+
 def add_redact_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--redact", default=None, metavar="auto|text|FILE",
                    help="blur private details on screen in a redacted copy of the source the plan then names: "
                         "auto (OCR: e-mail addresses, phone numbers, keys, card numbers, --redact-terms), text (every "
-                        "line of text) or a redactions.json [{start, end, box: [x, y, w, h], why}]. auto/text need tesseract")
+                        "line of text) or a redactions.json [{start, end, box: [x, y, w, h], why}]. auto/text need OCR (--redact-ocr)")
     p.add_argument("--redact-terms", default=None,
                    help="text file, one name or phrase per line (re: for a regex), blurred too with --redact auto")
+    p.add_argument("--redact-ocr", default="auto", choices=redactmod.OCR_ENGINES,
+                   help=OCR_HELP)
     p.add_argument("--redact-every", type=float, default=redactmod.EVERY_SECONDS,
                    help=f"seconds between the frames --redact auto/text reads inside each moment (default {redactmod.EVERY_SECONDS:g})")
 
@@ -596,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
     prd.add_argument("--redact", required=True, metavar="auto|text|FILE",
                      help="auto: OCR the frames and blur e-mail addresses, phone numbers, keys, card numbers and "
                           "--terms; text: blur every line of text; FILE: redactions.json [{start, end, box: [x, y, w, h], why}]")
+    prd.add_argument("--ocr", default="auto", choices=redactmod.OCR_ENGINES,
+                     help=OCR_HELP)
     prd.add_argument("--plan", default=None, help="read only this plan's segments, then point the plan at the copy")
     prd.add_argument("--terms", default=None, help="text file, one name or phrase per line (re: for a regex), to blur too")
     prd.add_argument("--every", type=float, default=None,
