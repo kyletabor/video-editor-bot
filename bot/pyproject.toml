@@ -11,6 +11,7 @@ dependencies = [
 # Both are opt-in: `clipbot plan` on a captioned Meet recording needs neither.
 whisper = ["faster-whisper>=1.2"]  # --transcribe (clipbot/transcribe.py)
 llm = ["anthropic>=1.0"]  # clipbot reel --llm (clipbot/llm.py)
+vision = ["pyobjc-framework-Vision>=10; sys_platform == 'darwin'"]  # --ocr vision: Apple Vision OCR (clipbot/redact.py)
 
 [project.scripts]
 clipbot = "clipbot.cli:main"

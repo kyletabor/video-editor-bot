@@ -211,8 +211,112 @@ def test_all_text_mode_boxes_each_readable_line():
 
 def test_detect_fails_closed_without_tesseract(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(rd, "vision_available", lambda: False)
     with pytest.raises(RuntimeError, match="tesseract"):
         rd.detect("x.mp4", [(0, 1)], info=rd.VideoInfo(640, 360))
+
+
+# ----------------------------------------------------------------- OCR engines and Vision tiles
+
+def test_resolve_ocr_prefers_vision_and_fails_closed(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(rd, "vision_available", lambda: True)
+    assert rd.resolve_ocr("auto") == "vision"
+    assert rd.resolve_ocr("tesseract") == "tesseract"
+    monkeypatch.setattr(rd, "vision_available", lambda: False)
+    assert rd.resolve_ocr("auto") == "tesseract"
+    with pytest.raises(RuntimeError, match="vision extra"):
+        rd.resolve_ocr("vision")  # asked for Vision: never quietly falls back to tesseract
+    with pytest.raises(ValueError, match="--ocr"):
+        rd.resolve_ocr("easyocr")
+
+
+def test_detect_fails_closed_when_vision_is_asked_for_but_missing(monkeypatch):
+    monkeypatch.setattr(rd, "vision_available", lambda: False)
+    with pytest.raises(RuntimeError, match="Vision"):
+        rd.detect("x.mp4", [(0, 1)], info=rd.VideoInfo(640, 360), ocr="vision")
+
+
+@pytest.mark.parametrize("width, height", [(1920, 1080), (1280, 720), (3840, 2160), (300, 200)])
+def test_tiles_cover_the_frame_and_hold_every_short_word_whole(width, height):
+    tiles = rd.tile_rects(width, height)
+    for x, y, w, h in tiles:
+        assert 0 <= x and 0 <= y and x + w <= width and y + h <= height
+    # every 120 x 40 px box (a long word, a phone number) lies wholly inside at least one tile
+    for bx in range(0, width - 120 + 1, 37):
+        for by in range(0, height - 40 + 1, 23):
+            assert any(x <= bx and y <= by and bx + 120 <= x + w and by + 40 <= y + h for x, y, w, h in tiles), (bx, by)
+
+
+def test_tile_frame_args_write_one_upscaled_png_per_tile_and_the_thumbnail(tmp_path):
+    tiles = [(0, 0, 420, 300), (300, 0, 420, 300)]
+    pngs = [tmp_path / "a.png", tmp_path / "b.png"]
+    args = rd.tile_frame_args("in.mp4", 12.5, tiles, pngs, tmp_path / "t.gray", scale=3)
+    graph = args[args.index("-filter_complex") + 1]
+    assert "split=3" in graph and "crop=420:300:300:0,scale=iw*3:ih*3" in graph
+    assert args.count("-map") == 3 and str(pngs[1]) in args and args[-1] == str(tmp_path / "t.gray")
+
+
+def test_vision_box_flips_to_top_left_source_pixels():
+    # Vision: normalised, origin bottom-left. A box in the top-left quarter of tile (300, 200, 400, 300).
+    assert rd.vision_box((0.0, 0.5, 0.5, 0.5), (300, 200, 400, 300)) == (300, 200, 200, 150)
+    assert rd.vision_box((0.25, 0.0, 0.5, 0.1), (0, 0, 400, 300)) == (100, 270, 200, 30)
+
+
+def test_split_line_gives_each_word_its_own_box():
+    text = "fax 816-795-0144 now"
+    spans = {}
+
+    def box_for_range(start, length):
+        spans[text[start:start + length]] = (start, length)
+        return (start / len(text), 0.0, length / len(text), 1.0)  # a 1-line tile, x proportional to characters
+
+    words = rd.split_line(text, 87.5, (2, 0, 0), (100, 50, 200, 10), box_for_range)
+    assert [w.text for w in words] == ["fax", "816-795-0144", "now"]
+    assert words[1].box == (100 + round(4 / 20 * 200), 50, round(12 / 20 * 200), 10)
+    assert all(w.conf == 87.5 and w.line == (2, 0, 0) for w in words)
+    # and the line-level patterns still find the number across the split words
+    assert rd.find_sensitive(words) == [(words[1].box, "phone")]
+
+
+def _vision_ready() -> bool:
+    return _ffmpeg_present() and rd.vision_available()
+
+
+def _draw_screen(png: Path, lines: list[tuple[str, int, int]], size: float = 9.0) -> None:
+    """A white 1920x1080 'screen' with small black text, drawn with AppKit (no ffmpeg drawtext needed)."""
+    import AppKit
+
+    img = AppKit.NSImage.alloc().initWithSize_((1920, 1080))
+    img.lockFocus()
+    AppKit.NSColor.whiteColor().set()
+    AppKit.NSRectFill(((0, 0), (1920, 1080)))
+    attrs = {AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(size),
+             AppKit.NSForegroundColorAttributeName: AppKit.NSColor.blackColor()}
+    for text, x, y in lines:  # y from the top, like the source pixels
+        AppKit.NSString.stringWithString_(text).drawAtPoint_withAttributes_((x, 1080 - y - size), attrs)
+    img.unlockFocus()
+    rep = AppKit.NSBitmapImageRep.alloc().initWithData_(img.TIFFRepresentation())
+    rep.setSize_((1920, 1080))
+    png.write_bytes(bytes(rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {})))
+
+
+@pytest.mark.skipif(not _vision_ready(), reason="needs ffmpeg, macOS and the vision extra")
+def test_vision_reads_small_shared_screen_text(tmp_path):
+    """The Talk #3 case, made up: 9 px text on a 1080p 'screen', compressed like a Meet recording."""
+    png, src = tmp_path / "screen.png", tmp_path / "screen.mp4"
+    _draw_screen(png, [("Could you please fax them to 816-555-0144?", 410, 300),
+                       ("Draft is in your pat@example.com folder", 1250, 760),
+                       ("Pick the demo workflow for Robin and Sam", 700, 520)])
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-loop", "1", "-i", str(png), "-t", "2", "-r", "25",
+                    "-vf", "scale=1920:1080", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", str(src)],
+                   check=True)
+    rs = rd.detect(src, [(0, 2)], info=rd.VideoInfo(1920, 1080), every=1.0, ocr="vision",
+                   terms=rd.compile_terms(["Robin"]))
+    kinds = {r.why for r in rs}
+    assert {"phone", "email", "term"} <= kinds
+    phone = next(r for r in rs if r.why == "phone")
+    assert 410 < phone.box[0] < 700 and 290 < phone.box[1] < 320 and phone.box[2] < 160  # the number, not the line
 
 
 # ----------------------------------------------------------------- with ffmpeg

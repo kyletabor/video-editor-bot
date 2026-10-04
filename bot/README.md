@@ -234,7 +234,7 @@ uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact boxes.j
 ```
 
 - **`auto`** reads a frame every second (`--redact-every`) inside the parts of
-  the recording the reel shows, with tesseract OCR, and blurs every word that
+  the recording the reel shows, with OCR (below), and blurs every word that
   looks private: e-mail addresses, phone numbers, card numbers (Luhn-checked),
   SSNs, API keys (`sk-`, `ghp_`, `AKIA`, ...) and long random-looking tokens,
   plus anything in `--redact-terms FILE` (one name or phrase per line,
@@ -264,10 +264,22 @@ does the same for a plan that already exists (it reads only the plan's
 segments and points the plan at the copy; render it again). Without `--plan`
 it reads the whole recording, one frame every 2 s.
 
-`auto` and `text` need tesseract (`brew install tesseract`,
-`sudo apt install tesseract-ocr`, or the UB Mannheim installer on Windows).
-Privacy fails closed: without tesseract, or when ffmpeg fails, the run stops
-instead of rendering an unblurred reel. OCR is not perfect (tiny or
+`auto` and `text` need OCR, picked with `--ocr` (`--redact-ocr` on `reel`):
+
+- **`vision`**: Apple Vision, on a Mac with the `vision` extra
+  (`uv run --project bot --extra vision clipbot ...`). It reads each frame as
+  overlapping tiles, each upscaled 3x, which is what finds the 7-10 px text of
+  a shared screen in a 1080p Meet recording. On Talk #3's shared screen it
+  found 10 private spots (5 e-mail addresses, 4 phone numbers, a token) where
+  tesseract found 1.
+- **`tesseract`**: everywhere else (`brew install tesseract`,
+  `sudo apt install tesseract-ocr`, or the UB Mannheim installer on Windows).
+  Good on slides and large text; it misses much of a small shared screen.
+- **`auto`** (the default): `vision` when it loads, else `tesseract`.
+
+Privacy fails closed: without the OCR engine asked for (`--ocr vision` never
+falls back to tesseract), or when ffmpeg fails, the run stops instead of
+rendering an unblurred reel. OCR is not perfect (tiny or
 low-contrast text, images of text, handwriting), and the patterns are a net,
 not a guarantee: a street address, a name not in `--redact-terms`, a number
 written as words or a phone number with no separators and a country code

@@ -20,13 +20,22 @@ A redaction is a box and a time range (`Redaction`). They come from:
   "why": "screen share"}]`, `start`/`end` in seconds or h:mm:ss, the box in
   source pixels;
 - `detect` (`--redact auto` / `--redact text`): frames sampled every `every`
-  seconds inside the given spans, read with tesseract (OCR, a separate install:
-  `brew install tesseract`, `apt install tesseract-ocr`), and every word that
+  seconds inside the given spans, read with OCR, and every word that
   matches a sensitive pattern (`SENSITIVE`: e-mail addresses, phone numbers,
   card numbers that pass the Luhn check, SSNs, API keys and long random-looking
   tokens) or a caller's term (`--redact-terms FILE`: names, a client, a
   project) is boxed. `text` boxes every line of text instead: the automatic
   version of blurring the whole screen.
+
+Two OCR engines (`--ocr`): Apple Vision on a Mac (`vision`, the `vision`
+extra: pyobjc-framework-Vision) and tesseract everywhere else (`tesseract`, a
+separate install: `brew install tesseract`, `apt install tesseract-ocr`).
+`auto` picks Vision when it can be loaded. A shared screen in a 1080p Meet
+recording often carries 7-10 px text; tesseract read almost none of it on a
+real talk (a doctor's name, phone numbers and e-mail addresses all missed), so
+Vision reads each frame as overlapping tiles (`VISION_TILE`, `VISION_STEP`),
+each upscaled `VISION_SCALE` times: whole-frame Vision downsamples the image and
+loses the small text too.
 
 A word seen at sample t was not seen at t - every, so each detection is blurred
 from the sample before it to the sample after it (`every` on each side) and
@@ -45,12 +54,14 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -60,6 +71,10 @@ from .speakers import parse_clock
 
 EVERY_SECONDS = 1.0  # sample spacing inside a reel's moments
 OCR_SCALE = 2  # tesseract reads screen text best at ~30 px; Meet screen shares are ~12-16 px
+VISION_TILE = (420, 300)  # source pixels per Vision tile: small enough that Vision keeps 7 px text
+VISION_STEP = (300, 200)  # tile spacing: the overlap holds any word up to 120 px wide whole in some tile
+VISION_SCALE = 3  # each tile is upscaled before Vision reads it
+OCR_ENGINES = ("auto", "vision", "tesseract")
 MIN_CONFIDENCE = 0  # tesseract's word confidence (0-100; -1 = not a word)
 TEXT_MODE_CONFIDENCE = 40  # `text` mode skips the noise OCR reports on faces and backgrounds
 PAD_PIXELS = 6  # around every OCR box: glyph tops, descenders and anti-aliasing
@@ -438,6 +453,111 @@ def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_
     return found
 
 
+# ----------------------------------------------------------------- Apple Vision OCR
+
+def vision_available() -> bool:
+    """Apple Vision can be used: a Mac with the `vision` extra (pyobjc-framework-Vision)."""
+    return sys.platform == "darwin" and importlib.util.find_spec("Vision") is not None
+
+
+def resolve_ocr(ocr: str) -> str:
+    """`auto` -> `vision` when it can be loaded, else `tesseract`. Fails closed: the
+    engine asked for (or the only one left) must be there."""
+    if ocr not in OCR_ENGINES:
+        raise ValueError(f"redact: --ocr must be one of {', '.join(OCR_ENGINES)}, not {ocr!r}")
+    if ocr in ("auto", "vision") and vision_available():
+        return "vision"
+    if ocr == "vision":
+        raise RuntimeError("redact: Apple Vision OCR needs macOS and the vision extra "
+                           "(uv run --project bot --extra vision clipbot ...); or pass --ocr tesseract")
+    if not shutil.which("tesseract"):
+        raise RuntimeError("redact: tesseract (OCR) not found on PATH; install it (macOS: brew install tesseract, "
+                           "or use Apple Vision: --extra vision; Ubuntu: sudo apt install tesseract-ocr) "
+                           "or pass --redact FILE with boxes drawn by hand")
+    return "tesseract"
+
+
+def _starts(size: int, tile: int, step: int) -> list[int]:
+    if size <= tile:
+        return [0]
+    out = list(range(0, size - tile, step))
+    return out + [size - tile]  # the last tile sits flush with the far edge
+
+
+def tile_rects(width: int, height: int, tile: tuple[int, int] = VISION_TILE,
+               step: tuple[int, int] = VISION_STEP) -> list[tuple[int, int, int, int]]:
+    """Overlapping (x, y, w, h) tiles that cover the whole frame."""
+    tw, th = min(tile[0], width), min(tile[1], height)
+    return [(x, y, tw, th) for y in _starts(height, th, step[1]) for x in _starts(width, tw, step[0])]
+
+
+def tile_frame_args(source: str | Path, t: float, tiles: list[tuple[int, int, int, int]], pngs: list[Path],
+                    thumb: Path, scale: int = VISION_SCALE) -> list[str]:
+    """One frame at t: each tile cropped and upscaled to its own PNG, plus the grey thumbnail."""
+    n = len(tiles)
+    graph = [f"[0:v]split={n + 1}" + "".join(f"[c{k}]" for k in range(n)) + "[s0]"]
+    graph += [f"[c{k}]crop={w}:{h}:{x}:{y},scale=iw*{scale}:ih*{scale}:flags=lanczos[o{k}]"
+              for k, (x, y, w, h) in enumerate(tiles)]
+    graph.append(f"[s0]scale={THUMB[0]}:{THUMB[1]}:flags=area,format=gray[s]")
+    args = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", f"{max(t, 0):.3f}", "-i", str(source),
+            "-filter_complex", ";".join(graph)]
+    for k, png in enumerate(pngs):
+        args += ["-map", f"[o{k}]", "-frames:v", "1", str(png)]
+    return args + ["-map", "[s]", "-frames:v", "1", "-f", "rawvideo", str(thumb)]
+
+
+def vision_box(norm: tuple[float, float, float, float], rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """A Vision box (normalised, origin bottom-left) in a tile -> source pixels (origin top-left)."""
+    nx, ny, nw, nh = norm
+    x, y, w, h = rect
+    return (int(round(x + nx * w)), int(round(y + (1 - ny - nh) * h)),
+            max(1, int(round(nw * w))), max(1, int(round(nh * h))))
+
+
+def split_line(text: str, conf: float, line: tuple[int, int, int], rect: tuple[int, int, int, int],
+               box_for_range) -> list[Word]:
+    """One Vision line -> Words: each whitespace-separated run with its own box
+    (`box_for_range(start, length)` returns the normalised box or None)."""
+    words = []
+    for m in re.finditer(r"\S+", text):
+        norm = box_for_range(m.start(), m.end() - m.start())
+        if norm is not None:
+            words.append(Word(m.group(), vision_box(norm, rect), conf, line))
+    return words
+
+
+def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -> list[Word]:
+    """Read one upscaled tile with Apple Vision; boxes come back in source pixels."""
+    import objc
+    import Vision
+    from Foundation import NSURL
+
+    with objc.autorelease_pool():
+        handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(NSURL.fileURLWithPath_(str(png)), None)
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        req.setUsesLanguageCorrection_(False)  # names, numbers and addresses are not dictionary words
+        ok, err = handler.performRequests_error_([req], None)
+        if not ok:
+            raise RuntimeError(f"redact: Apple Vision failed on a frame: {err}")
+        words: list[Word] = []
+        for n, obs in enumerate(req.results() or []):
+            cands = obs.topCandidates_(1)
+            if not cands:
+                continue
+            cand = cands[0]
+
+            def box_for_range(start: int, length: int, cand=cand):
+                found, _ = cand.boundingBoxForRange_error_((start, length), None)
+                if found is None:
+                    return None
+                b = found.boundingBox()
+                return (b.origin.x, b.origin.y, b.size.width, b.size.height)
+
+            words += split_line(str(cand.string()), float(cand.confidence()) * 100, (tile, n, 0), rect, box_for_range)
+        return words
+
+
 def _thumb_diff(a: bytes | None, b: bytes | None) -> float:
     if not a or not b or len(a) != len(b):
         return 255.0
@@ -445,34 +565,46 @@ def _thumb_diff(a: bytes | None, b: bytes | None) -> float:
 
 
 def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoInfo, every: float = EVERY_SECONDS,
-           terms: list[re.Pattern[str]] = (), all_text: bool = False, log=lambda msg: None) -> list[Redaction]:
-    """Sample, OCR and box (module docstring). Raises RuntimeError without tesseract."""
-    tesseract = shutil.which("tesseract")
-    if not tesseract:
-        raise RuntimeError("redact: tesseract (OCR) not found on PATH; install it (macOS: brew install tesseract; "
-                           "Ubuntu: sudo apt install tesseract-ocr) or pass --redact FILE with boxes drawn by hand")
+           terms: list[re.Pattern[str]] = (), all_text: bool = False, ocr: str = "auto",
+           log=lambda msg: None) -> list[Redaction]:
+    """Sample, OCR and box (module docstring). Raises RuntimeError when the OCR engine is missing."""
+    engine = resolve_ocr(ocr)
+    tesseract = shutil.which("tesseract") if engine == "tesseract" else None
+    tiles = tile_rects(info.width, info.height) if engine == "vision" else []
     times = sample_times(spans, every)
     if not times:
         return []
-    log(f"redact: reading {len(times)} frames (every {every:g} s) for {'all text' if all_text else 'private details'}")
+    log(f"redact: reading {len(times)} frames (every {every:g} s) with {engine} "
+        f"for {'all text' if all_text else 'private details'}")
     with tempfile.TemporaryDirectory(prefix="clipbot-redact-") as tmp:
         tmpdir = Path(tmp)
 
         def grab(k_t):
             k, t = k_t
-            png, thumb = tmpdir / f"f{k:05d}.png", tmpdir / f"f{k:05d}.gray"
-            proc = subprocess.run(frame_args(source, t, png, thumb), capture_output=True, text=True)
-            if proc.returncode or not png.is_file():
+            thumb = tmpdir / f"f{k:05d}.gray"
+            if engine == "vision":
+                pngs = [tmpdir / f"f{k:05d}-{n:03d}.png" for n in range(len(tiles))]
+                args = tile_frame_args(source, t, tiles, pngs, thumb)
+            else:
+                pngs = [tmpdir / f"f{k:05d}.png"]
+                args = frame_args(source, t, pngs[0], thumb)
+            proc = subprocess.run(args, capture_output=True, text=True)
+            if proc.returncode or not all(p.is_file() for p in pngs):
                 raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
                                    f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
             data = thumb.read_bytes() if thumb.is_file() else None
             thumb.unlink(missing_ok=True)
-            return png, data
+            return pngs, data
 
-        def ocr(png: Path) -> list[Word]:
+        def ocr_frame(pngs: list[Path]) -> list[Word]:
+            if engine == "vision":
+                words: list[Word] = []
+                for n, (png, rect) in enumerate(zip(pngs, tiles)):
+                    words += vision_words(png, rect, tile=n)
+                return words
             # One thread per tesseract: its OpenMP threads on top of WORKERS processes thrash (40x slower here).
-            proc = subprocess.run([tesseract, str(png), "stdout", "--psm", "11", "tsv"], capture_output=True, text=True,
-                                  env={**os.environ, "OMP_THREAD_LIMIT": "1"})
+            proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
+                                  text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
             if proc.returncode:
                 raise RuntimeError(f"redact: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
             return parse_tsv(proc.stdout, OCR_SCALE)
@@ -498,9 +630,10 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
                         if not same:
                             todo.append(k)
                             last_read = thumb
-                    read.update(zip(todo, pool.map(lambda k: ocr(pngs[k][0]), todo)))
-                    for png, _ in pngs.values():
-                        png.unlink(missing_ok=True)
+                    read.update(zip(todo, pool.map(lambda k: ocr_frame(pngs[k][0]), todo)))
+                    for files, _ in pngs.values():
+                        for png in files:
+                            png.unlink(missing_ok=True)
         except FileNotFoundError as e:
             raise RuntimeError("ffmpeg not found on PATH") from e
         log(f"redact: OCR on {len(read)} distinct frames ({len(times) - len(read)} unchanged, reused)")
@@ -530,7 +663,7 @@ def redacted_path(source: str | Path, out_dir: str | Path) -> Path:
 
 def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir: str | Path, *,
         terms_file: str | None = None, every: float = EVERY_SECONDS, duration: float | None = None,
-        log=lambda msg: None) -> tuple[Path | None, list[Redaction]]:
+        ocr: str = "auto", log=lambda msg: None) -> tuple[Path | None, list[Redaction]]:
     """`--redact MODE`: `auto` (private details), `text` (every line of text) or
     a redactions.json path. Writes redactions.json in `out_dir` and the redacted
     copy next to it; returns (copy, redactions), copy None when nothing needed
@@ -538,7 +671,8 @@ def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir
     info = video_info(source)
     terms = compile_terms(Path(terms_file).read_text(encoding="utf-8").splitlines()) if terms_file else []
     if mode in ("auto", "text"):
-        redactions = detect(source, spans, info=info, every=every, terms=terms, all_text=mode == "text", log=log)
+        redactions = detect(source, spans, info=info, every=every, terms=terms, all_text=mode == "text",
+                            ocr=ocr, log=log)
     else:
         if terms_file:
             log("redact: --redact-terms ignored: a redactions file is applied as written")
