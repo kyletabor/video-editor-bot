@@ -52,10 +52,12 @@ command on its own.
 5. **Build** only in your lane's folder. Commit messages start with the task id.
 6. **Open the PR:** `git push -u origin HEAD`, then
    `gh pr create --title "[<id>] <summary>" --body "Task <id>"`.
-7. **Review** (the *other* lane's agent does this when its sync shows your PR):
-   `gh pr diff <n>`, then `gh pr review <n> --approve` or
-   `gh pr review <n> --request-changes --body "<why>"`. Never approve your own PR.
-8. **Merge** (the author, once the `reviewers:` line of `gh pr view <n>` shows an approval):
+7. **Review** under Kyle's dev process (the `dev-process` skill), sized to the change:
+   a code review by a separate agent (not the builder) that ends in APPROVE, and for
+   anything beyond a small, risk-free change an independent verification on real inputs
+   that ends in PASS. Fix and re-review at most twice. Put the verdicts and evidence in
+   the PR. The other lane's approval is no longer needed.
+8. **Merge** (the author, once CI is green and the review and verification passed):
    `gh pr merge <n> --squash --delete-branch`
 9. **Close:** `bd close <id> --reason "PR #<n>"`, then `bd dolt pull && bd dolt push`
 
@@ -79,7 +81,7 @@ command on its own.
 ## 4. Code rules
 
 - `contract/` is the only code the lanes share: the edit-plan format. Build against it and
-  test against its examples. Changing it takes a `lane:shared` task and a PR the other lane reviews.
+  test against its examples. Changing it takes a `lane:shared` task and a PR reviewed as in loop step 7.
 - Each lane keeps its own dependency file inside its own folder. No shared root package file.
 - Rebase often: `git fetch origin && git rebase origin/main`. Resolve conflicts only in your
   own files. If a conflict touches the other lane, stop and comment on the task.
@@ -94,13 +96,13 @@ command on its own.
   2. `bd list --status=in_progress`, then `bd show <id>` on each: who holds what. Confirm
      your own task still lists you as `Assignee`.
   3. `bd ready --label lane:<yours>` shows what's next for you.
-  4. `gh pr list --search "-author:@me"`: PRs your human didn't open. They're waiting for
-     your review. For your own PRs, the `reviewers:` line of `gh pr view <n>` shows approvals.
+  4. `gh pr list --search "-author:@me"`: PRs your human didn't open, so you know what the
+     other lane is changing (they no longer wait for your review).
   5. `bd list --label lane:<yours> --status=open,in_progress`, then `bd comments <id>` on
      each: these are the messages for you.
 
   Answer in three lines: what the other agent is doing, what's next for you, and anything
-  addressed to you (comments, or PRs to review).
+  addressed to you (comments).
 
 ---
 

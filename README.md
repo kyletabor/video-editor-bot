@@ -79,6 +79,10 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
 - Add `--style NAME` for music and a transition: `uv run --project bot clipbot styles` lists
   them. Music plays under the cards only, cut so it starts with a card and lands on an ending
   ([docs/styles.md](docs/styles.md)). Pipeline AI Talks videos use `--style pipeline`.
+  Edited the cards by hand afterwards? `clipbot score PLAN --style NAME` re-scores the music.
+- Shared screens with private details? `--redact auto` blurs e-mail addresses, phone numbers,
+  keys and names you list (needs tesseract); `--redact text` blurs all on-screen text, and
+  `clipbot redact --plan PLAN` does it for an existing plan ([bot/README.md](bot/README.md#blurring-private-details-on-screen-clipbotredactpy)).
 
 ### 4. Pick the moments yourself
 
@@ -165,6 +169,7 @@ command on every OS (`make check` is an alias). Details, per-check runs and the
 | Frame-accurate cuts, burned-in captions, intro/chapter/outro cards, 16:9 or 9:16 | PDF export of the summary |
 | Styles: music scored to the cards and a transition, by name (`--style`, `clipbot styles`); new ones written as code ([docs/styles.md](docs/styles.md)) | |
 | Executive summary and transcript in Markdown | |
+| Blurring private details on shared screens (`--redact`, `clipbot redact`) | |
 | Windows, macOS, Linux/ARM; CI runs the gate on Ubuntu and Windows | |
 
 ## Contributing
