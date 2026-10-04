@@ -279,10 +279,15 @@ def cmd_reel(a: argparse.Namespace) -> int:
     if a.redact:
         shown = [seg for m in moments
                  for seg in reelmod.segments_for(m, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds)]
-        copy, _ = redactmod.run(
-            info.path, a.redact, shown, out_dir, terms_file=a.redact_terms, every=a.redact_every,
-            duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
-        )
+        try:
+            copy, _ = redactmod.run(
+                info.path, a.redact, shown, out_dir, terms_file=a.redact_terms, every=a.redact_every,
+                duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
+            )
+        except Exception:
+            if out_path.is_file():
+                print(f"redact: {out_path} is left from an earlier run and is NOT redacted", file=sys.stderr)
+            raise
         if copy:
             plan_info = dataclasses.replace(info, path=str(copy))
 
@@ -423,6 +428,11 @@ def cmd_redact(a: argparse.Namespace) -> int:
     if plan_path:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         planmod.validate(plan)
+        named = plan["source"]["path"]
+        # the plan names this recording, or the redacted copy an earlier run made of it
+        if named not in (planmod.contract_path(a.source), planmod.contract_path(redactmod.redacted_path(
+                a.source, Path(a.out_dir) if a.out_dir else plan_path.parent))):
+            raise ValueError(f"{plan_path} is a plan for {named}, not {a.source}")
         spans = [(s["start"], s["end"]) for c in plan["clips"] for s in c["segments"]]
         out_dir = Path(a.out_dir) if a.out_dir else plan_path.parent
         every = a.every if a.every is not None else redactmod.EVERY_SECONDS

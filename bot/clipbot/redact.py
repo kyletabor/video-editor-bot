@@ -70,12 +70,19 @@ MAX_RADIUS = 40
 WORKERS = 4
 ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
 TAG = "clipbot-redact"
+VERSION = 2  # bump when the copy a given source + boxes produce changes (cached copies are then rewritten)
 
 # One regex per kind, run over each OCR line (words joined by single spaces).
 SENSITIVE: dict[str, re.Pattern[str]] = {
-    "email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
-    "phone": re.compile(r"(?<![\w.])(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w])"),
-    "ssn": re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"),
+    # OCR often reads "a@b.com" as "a @ b.com"
+    "email": re.compile(r"[\w.+-]+ ?@ ?[\w-]+(?:\.[\w-]+)+"),
+    # North American with separators or 10 bare digits (a country code needs a separator after it, so a
+    # 13-digit order number is not a phone), and any "+" international number of 7-15 digits.
+    "phone": re.compile(
+        r"(?<![\w.])(?:(?:\+?1[\s.-])?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}"
+        r"|\+\d{1,3}(?:[\s.-]?\(?\d{1,5}\)?){2,5})(?![\w])"
+    ),
+    "ssn": re.compile(r"(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)"),
     "card": re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)"),
     "key": re.compile(
         r"(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}"
@@ -207,10 +214,11 @@ def blur_radius(box: tuple[int, int, int, int]) -> tuple[int, int]:
     return max(1, min(MAX_RADIUS, side // 2 - 1)), max(1, min(MAX_RADIUS // 2, side // 4 - 1))
 
 
-def filter_graph(redactions: list[Redaction], start_time: float = 0.0) -> str:
+def filter_graph(redactions: list[Redaction]) -> str:
     """One crop + boxblur + overlay per redaction, enabled only in its range.
-    `t` in `enable` is the frame's timestamp, which starts at the container's
-    start_time, so the ranges (relative to the start) are shifted by it."""
+    Without -copyts ffmpeg shifts the input so its first frame is t = 0, the same
+    clock `-ss` and the renderer use, so the ranges go in as written (a .ts
+    source starting at 1.46 s was blurred 1.46 s late when they were shifted)."""
     if not redactions:
         return "[0:v]null[vout]"
     n = len(redactions)
@@ -219,7 +227,7 @@ def filter_graph(redactions: list[Redaction], start_time: float = 0.0) -> str:
     for k, r in enumerate(redactions):
         x, y, w, h = r.box
         lr, cr = blur_radius(r.box)
-        a, b = r.start + start_time, r.end + start_time
+        a, b = r.start, r.end
         out = "vout" if k == n - 1 else f"v{k}"
         parts.append(f"[c{k}]crop={w}:{h}:{x}:{y},boxblur=luma_radius={lr}:luma_power=3:chroma_radius={cr}:chroma_power=3[b{k}]")
         parts.append(f"[{prev}][b{k}]overlay={x}:{y}:enable='between(t,{a:.3f},{b:.3f})'[{out}]")
@@ -231,7 +239,8 @@ def fingerprint(source: str | Path, redactions: list[Redaction]) -> str:
     """Identifies one (source, redactions) pair; stored in the copy's metadata so
     an unchanged re-run reuses the copy instead of encoding an hour again."""
     st = Path(source).stat()
-    blob = json.dumps([str(Path(source).resolve()), st.st_size, int(st.st_mtime), [r.spec() for r in redactions]])
+    blob = json.dumps([VERSION, ENCODE, str(Path(source).resolve()), st.st_size, int(st.st_mtime),
+                       [r.spec() for r in redactions]])
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -247,23 +256,22 @@ def _stored_fingerprint(path: Path) -> str | None:
     return comment[len(TAG) + 1:] if comment.startswith(TAG + ":") else None
 
 
-def apply_args(source: str | Path, redactions: list[Redaction], out: str | Path, *,
-               start_time: float = 0.0, tag: str = "") -> list[str]:
+def apply_args(source: str | Path, redactions: list[Redaction], out: str | Path, *, tag: str = "") -> list[str]:
     """ffmpeg argv for the redacted copy: video re-encoded through the blur
-    graph, every audio and subtitle stream copied as is (the renderer reads the
-    captions from the copy), container metadata kept."""
+    graph, audio copied as is, text captions converted to mov_text (the one
+    caption codec mp4 holds: an MKV's subrip cannot be copied in) so the renderer
+    still reads them from the copy, container metadata kept."""
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-i", str(source),
-        "-filter_complex", filter_graph(redactions, start_time),
+        "-filter_complex", filter_graph(redactions),
         "-map", "[vout]", "-map", "0:a?", "-map", "0:s?",
-        *ENCODE, "-c:a", "copy", "-c:s", "copy",
+        *ENCODE, "-c:a", "copy", "-c:s", "mov_text",
         "-map_metadata", "0", "-metadata", f"comment={TAG}:{tag}", "-movflags", "+faststart",
         str(out),
     ]
 
 
-def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, start_time: float = 0.0,
-          log=lambda msg: None) -> bool:
+def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, log=lambda msg: None) -> bool:
     """Write the redacted copy. False when an identical copy is already there."""
     out = Path(out)
     tag = fingerprint(source, redactions)
@@ -275,14 +283,15 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, s
     log(f"redact: writing {out} ({len(redactions)} blurred region(s)); the whole video is re-encoded, "
         "about a quarter of its length on a laptop")
     try:
-        proc = subprocess.run(apply_args(source, redactions, tmp, start_time=start_time, tag=tag),
+        proc = subprocess.run(apply_args(source, redactions, tmp, tag=tag),
                               capture_output=True, text=True)
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH") from e
     if proc.returncode:
         tmp.unlink(missing_ok=True)
-        tail = proc.stderr.strip().splitlines()[-1:] or ["no output"]
-        raise RuntimeError(f"redact: ffmpeg failed: {tail[0]}")
+        lines = proc.stderr.strip().splitlines()
+        cause = [ln for ln in lines if "rror" in ln or "not find" in ln or "nvalid" in ln][:2] or lines[-1:] or ["no output"]
+        raise RuntimeError(f"redact: ffmpeg failed: {' / '.join(cause)}")
     tmp.replace(out)
     return True
 
@@ -293,13 +302,12 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, s
 class VideoInfo:
     width: int
     height: int
-    start_time: float
 
 
 def video_info(source: str | Path) -> VideoInfo:
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=start_time",
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
              "-of", "json", str(source)], check=True, capture_output=True, text=True,
         ).stdout
     except FileNotFoundError as e:
@@ -310,8 +318,7 @@ def video_info(source: str | Path) -> VideoInfo:
     streams = data.get("streams") or []
     if not streams:
         raise RuntimeError(f"{source}: no video stream to redact")
-    return VideoInfo(int(streams[0]["width"]), int(streams[0]["height"]),
-                     float(data.get("format", {}).get("start_time", 0) or 0))
+    return VideoInfo(int(streams[0]["width"]), int(streams[0]["height"]))
 
 
 # ----------------------------------------------------------------- detection: sample + OCR
@@ -458,7 +465,9 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
             if proc.returncode or not png.is_file():
                 raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
                                    f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
-            return png, thumb.read_bytes() if thumb.is_file() else None
+            data = thumb.read_bytes() if thumb.is_file() else None
+            thumb.unlink(missing_ok=True)
+            return png, data
 
         def ocr(png: Path) -> list[Word]:
             # One thread per tesseract: its OpenMP threads on top of WORKERS processes thrash (40x slower here).
@@ -468,22 +477,33 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
                 raise RuntimeError(f"redact: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
             return parse_tsv(proc.stdout, OCR_SCALE)
 
+        # Chunk by chunk, so a whole-recording scan never holds thousands of 4K PNGs on disk at once.
+        # A frame that is the same picture as the frame last read (compared with that frame, not just
+        # the previous sample, so slow drift adds up and forces a new read) reuses its words.
+        owner: list[int] = []
+        last_read: bytes | None = None  # thumbnail of the frame last sent to OCR
+        read: dict[int, list[Word]] = {}
+        chunk = WORKERS * 16
         try:
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                frames = list(pool.map(grab, enumerate(times)))
+                for lo in range(0, len(times), chunk):
+                    ks = range(lo, min(lo + chunk, len(times)))
+                    pngs = dict(zip(ks, pool.map(grab, ((k, times[k]) for k in ks))))
+                    todo = []
+                    for k in ks:
+                        thumb = pngs[k][1]
+                        same = (k and times[k] - times[k - 1] <= every + 0.01
+                                and _thumb_diff(thumb, last_read) < SAME_FRAME_DIFF)
+                        owner.append(owner[k - 1] if same else k)
+                        if not same:
+                            todo.append(k)
+                            last_read = thumb
+                    read.update(zip(todo, pool.map(lambda k: ocr(pngs[k][0]), todo)))
+                    for png, _ in pngs.values():
+                        png.unlink(missing_ok=True)
         except FileNotFoundError as e:
             raise RuntimeError("ffmpeg not found on PATH") from e
-        # Same picture as the frame last read (not just the previous sample, so slow drift adds up and
-        # forces a new read): reuse its words. OCR runs on the rest, in parallel.
-        owner: list[int] = []
-        for k, (_, thumb) in enumerate(frames):
-            same = (k and times[k] - times[k - 1] <= every + 0.01
-                    and _thumb_diff(thumb, frames[owner[k - 1]][1]) < SAME_FRAME_DIFF)
-            owner.append(owner[k - 1] if same else k)
-        unique = sorted(set(owner))
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            read = dict(zip(unique, pool.map(lambda k: ocr(frames[k][0]), unique)))
-        log(f"redact: OCR on {len(unique)} distinct frames ({len(times) - len(unique)} unchanged, reused)")
+        log(f"redact: OCR on {len(read)} distinct frames ({len(times) - len(read)} unchanged, reused)")
 
     found: list[Redaction] = []
     for k, t in enumerate(times):
@@ -537,5 +557,5 @@ def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir
     if not redactions:
         return None, []
     copy = redacted_path(source, out_dir)
-    apply(source, redactions, copy, start_time=info.start_time, log=log)
+    apply(source, redactions, copy, log=log)
     return copy, redactions

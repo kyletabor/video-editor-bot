@@ -249,8 +249,9 @@ uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact boxes.j
   `ffmpeg -ss 12:40 -i talk.mp4 -frames:v 1 frame.png`).
 
 The blur is written to a **redacted copy of the source**,
-`<out dir>/<source>.redacted.mp4`: same length and timestamps, audio and
-caption streams copied untouched, only the video re-encoded (about a quarter
+`<out dir>/<source>.redacted.mp4`: same length and timestamps, audio copied
+untouched, text captions kept (as mp4 `mov_text`, so an MKV's SRT track comes
+along too), only the video re-encoded (about a quarter
 of the recording's length on a laptop; a re-run with the same boxes reuses
 the copy). The plan's `source.path` names the copy, so the renderer and the
 contract are unchanged and the original recording is never modified. Every
@@ -267,8 +268,12 @@ it reads the whole recording, one frame every 2 s.
 `sudo apt install tesseract-ocr`, or the UB Mannheim installer on Windows).
 Privacy fails closed: without tesseract, or when ffmpeg fails, the run stops
 instead of rendering an unblurred reel. OCR is not perfect (tiny or
-low-contrast text, images of text, handwriting), so the presenter still
-watches the reel before it is shared.
+low-contrast text, images of text, handwriting), and the patterns are a net,
+not a guarantee: a street address, a name not in `--redact-terms`, a number
+written as words or a phone number with no separators and a country code
+(`14155550142`) is not caught. Use `text` or a hand-drawn box when a screen is
+sensitive throughout, and the presenter still watches the reel before it is
+shared.
 
 ## Rendering
 

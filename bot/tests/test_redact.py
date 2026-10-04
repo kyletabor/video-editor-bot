@@ -105,8 +105,8 @@ def test_write_then_load_round_trips(tmp_path):
 
 # ----------------------------------------------------------------- ffmpeg arguments
 
-def test_filter_graph_blurs_each_box_only_in_its_range_shifted_by_start_time():
-    g = rd.filter_graph([Redaction(1, 2, (0, 230, 1440, 620)), Redaction(5, 6.5, (100, 100, 40, 20))], start_time=0.5)
+def test_filter_graph_blurs_each_box_only_in_its_range():
+    g = rd.filter_graph([Redaction(1.5, 2.5, (0, 230, 1440, 620)), Redaction(5.5, 7, (100, 100, 40, 20))])
     assert g.startswith("[0:v]split=3[base][c0][c1];")
     assert "[c0]crop=1440:620:0:230,boxblur=luma_radius=40:luma_power=3:chroma_radius=20:chroma_power=3[b0]" in g
     assert "[base][b0]overlay=0:230:enable='between(t,1.500,2.500)'[v0]" in g
@@ -117,7 +117,7 @@ def test_filter_graph_blurs_each_box_only_in_its_range_shifted_by_start_time():
 def test_apply_args_copy_audio_and_captions_and_tag_the_file():
     args = rd.apply_args("in file.mp4", [Redaction(0, 1, (0, 0, 20, 20))], "out.mp4", tag="abc")
     assert args[0] == "ffmpeg" and "in file.mp4" in args and args[-1] == "out.mp4"
-    assert args[args.index("-c:a") + 1] == "copy" and args[args.index("-c:s") + 1] == "copy"
+    assert args[args.index("-c:a") + 1] == "copy" and args[args.index("-c:s") + 1] == "mov_text"
     assert ["-map", "0:a?"] == args[args.index("0:a?") - 1: args.index("0:a?") + 1]
     assert ["-map", "0:s?"] == args[args.index("0:s?") - 1: args.index("0:s?") + 1]
     assert f"comment={rd.TAG}:abc" in args
@@ -165,6 +165,11 @@ def test_find_sensitive_boxes_only_the_private_part_of_a_line():
     ("AKIAABCDEFGHIJKLMNOP", "key"),
     ("4111-1111-1111-1111", "card"),
     ("078-05-1120", "ssn"),
+    ("078 05 1120", "ssn"),
+    ("+44 20 7946 0958", "phone"),
+    ("+49 30 901820", "phone"),
+    ("+1 415 555 0142", "phone"),
+    ("4155550142", "phone"),
     ("Zx9Qp2Lm7Rt4Vb8Nc1Kd6Hf3", "token"),
 ])
 def test_find_sensitive_kinds(text, why):
@@ -173,10 +178,18 @@ def test_find_sensitive_kinds(text, why):
 
 @pytest.mark.parametrize("text", [
     "4111-1111-1111-1112",  # fails the Luhn check: a part number, not a card
+    "1234567890123",  # an order number: 13 digits with no separators is not a phone
     "Pipeline", "2026-10-03", "github.com/kyletabor/video-editor-bot", "transcription_pipeline_overview",
 ])
 def test_find_sensitive_leaves_ordinary_text(text):
     assert rd.find_sensitive(line_words("see", text)) == []
+
+
+def test_find_sensitive_catches_an_address_ocr_split_at_the_at_sign():
+    words = line_words("mail", "alice", "@", "example.com")
+    hits = rd.find_sensitive(words)
+    assert [w for _, w in hits] == ["email"]
+    assert hits[0][0] == rd.union(words[1].box, words[3].box)
 
 
 def test_terms_match_case_insensitively_across_words_and_regexes():
@@ -199,7 +212,7 @@ def test_all_text_mode_boxes_each_readable_line():
 def test_detect_fails_closed_without_tesseract(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="tesseract"):
-        rd.detect("x.mp4", [(0, 1)], info=rd.VideoInfo(640, 360, 0.0))
+        rd.detect("x.mp4", [(0, 1)], info=rd.VideoInfo(640, 360))
 
 
 # ----------------------------------------------------------------- with ffmpeg
@@ -258,6 +271,45 @@ def test_run_blurs_the_box_in_its_range_keeps_streams_and_reuses_the_copy(tmp_pa
     assert rd.apply(src, rs, copy, log=logs.append) is False  # same source, same boxes: no second encode
     assert any("reusing" in m for m in logs)
     assert rd.apply(src, [Redaction(0, 1, (0, 0, 40, 40))], copy) is True
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("container", ["ts", "mkv"])
+def test_run_times_the_blur_on_sources_that_do_not_start_at_zero_and_keeps_srt_captions(tmp_path, container):
+    """An MPEG-TS starts at ~1.4 s: the blur must still land on 1-2 s as -ss and the renderer
+    count it. An MKV carries subrip captions, which mp4 cannot hold as is."""
+    srt = tmp_path / "c.srt"
+    srt.write_text("1\n00:00:00,500 --> 00:00:03,000\nhello there\n\n", encoding="utf-8")
+    src = tmp_path / f"talk.{container}"
+    subs = ["-i", str(srt), "-map", "0:v", "-map", "1:a", "-map", "2:s", "-c:s", "srt"] if container == "mkv" else []
+    subprocess.run([
+        "ffmpeg", "-nostdin", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=4", "-f", "lavfi", "-i", "sine=f=440:d=4", *subs,
+        "-c:v", "libx264", "-g", "5", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src),
+    ], check=True)  # -g 5: a seek into a TS needs a keyframe nearby
+    copy = tmp_path / "out.mp4"
+    rd.apply(src, [Redaction(1, 2, (0, 0, 160, 120))], copy)
+    box = (0, 0, 160, 120)
+    for t, blurred in ((0.5, False), (1.2, True), (1.8, True), (2.6, False)):
+        diff = _region_diff(_frame(src, t), _frame(copy, t), box)
+        assert (diff > 10) is blurred, (t, diff)
+    if container == "mkv":
+        kinds = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0",
+                                str(copy)], check=True, capture_output=True, text=True).stdout.split()
+        assert "mov_text" in kinds
+
+
+@needs_ffmpeg
+def test_cli_redact_refuses_a_plan_for_another_recording(tmp_path, capsys):
+    src = _make_source(tmp_path)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps({
+        "version": "1", "source": {"path": (tmp_path / "other.mp4").as_posix(), "captions": {"kind": "embedded"}},
+        "output": {"dir": tmp_path.as_posix(), "preset": "internal", "aspect": "16:9", "captions": "burn_in"},
+        "clips": [{"id": "clip-01-x", "takeaway": "x", "segments": [{"start": 0.5, "end": 3.0}]}],
+    }))
+    assert cli.main(["redact", "--source", str(src), "--redact", "auto", "--plan", str(plan_path)]) == 1
+    assert "is a plan for" in capsys.readouterr().err
 
 
 @needs_ffmpeg
