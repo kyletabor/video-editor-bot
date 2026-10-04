@@ -202,17 +202,17 @@ Then paste this into your agent (Kyle's lane is `lane:bot`, Ramsey's is `lane:re
 - To hand a shared task to an agent, add that agent's lane label to it:
   `bd label add <id> lane:render`.
 - `contract/` is the one piece of code both lanes share: the edit-plan format.
-  Changing it takes a shared task and a PR the other side reviews.
+  Changing it takes a shared task and a PR reviewed under the dev process (below).
 - Each lane keeps its own dependency file inside its own folder, so nobody
   fights over a shared package file.
 
 ---
 
-## 4. The loop and the handoff protocol
+## 4. The loop, review and merge
 
 ```
 sync → pick from own lane → claim + push → branch → build → PR
-     → other agent reviews → author merges → close task + push
+     → dev-process review + verification → author merges → close task + push
 ```
 
 The exact commands are in AGENTS.md, section 2. The step that matters most:
@@ -220,24 +220,24 @@ The exact commands are in AGENTS.md, section 2. The step that matters most:
 it's pushed. Branches are `<lane>/<bead-id>-<slug>`, PR titles start with the bead
 id, and `uv run --locked scripts/check.py` must be green before the PR opens.
 
-Cross-lane work is a conversation on the bead, in this order, each step a
-`bd comments add <id> "<STEP>: …"` followed by `bd dolt pull` and `bd dolt push`:
-
-| Step | Who | Meaning |
-|---|---|---|
-| `HANDOFF` | author | The PR is open and ready: what changed, how it was validated, what the reviewer should look at. |
-| `ACK` | reviewer | Seen; review under way. Stops the author from re-pinging. |
-| `CHANGES` | reviewer | Requested changes, listed; the author answers with a new `HANDOFF` after the fix. |
-| `APPROVE` | reviewer | `gh pr review <n> --approve` was given; the author may merge. |
-| `MERGED` | author | Merged (squash), branch deleted, `bd close <id>`; anything left over goes in a new bead. |
+**Review and merge.** The two-agent experiment, where each lane's agent approved
+the other's PRs, is over. Every PR is now reviewed under Kyle's dev process (his
+`dev-process` Claude Code plugin; what follows is the part that applies here),
+sized to the change: a code review by a separate agent (not the one that built
+it) that ends in APPROVE, and for anything beyond a small, risk-free change an
+independent verification on real inputs that ends in PASS. Fix and re-review at
+most twice.
+The verdicts and evidence go in the PR. Once CI is green and both have passed, the
+author merges its own PR (squash, delete the branch), closes the bead with the
+evidence, and puts anything left over in a new bead.
 
 Other rules of the road:
 
 - To reach the other agent, comment on a task in **its** lane
   (`bd comments add <their-task-id> "..."`), or create a new task in its lane.
   Each agent's sync reads the comments on its own lane's open tasks.
-- PRs waiting for review show up in `gh pr list --search "-author:@me"`, which the
-  sync also checks. Never approve your own PR.
+- The other lane's open PRs show up in `gh pr list --search "-author:@me"`, which the
+  sync also checks, so each side knows what the other is changing.
 - Humans: say **"sync"** to your agent any time. It pulls, then tells you in three
   lines what the other agent is doing, what's next, and anything addressed to it.
 - Never push to `main` (nothing technical stops it; this rule is the only guard),
@@ -288,11 +288,10 @@ bd comments add <id> "text"      # add to it
 bd create --title "..." --labels lane:bot --description "..."   # new task in a lane
 bd label add <id> lane:render    # hand a shared task to an agent
 bd unclaim <id>                  # give back a task you hold
-gh pr list --search "-author:@me"   # PRs waiting for your agent's review
-gh pr view <n>                   # a PR's reviewers and approvals
+gh pr list --search "-author:@me"   # what the other lane has open
+gh pr view <n>                   # a PR's checks and status
 uv run --locked scripts/check.py # the PR gate; must print "check: OK"
 ```
 
 Running two agents on one machine? Give each its own identity first:
-`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`). They share
-one GitHub login, so they can comment on each other's PRs but can't approve them.
+`export BEADS_ACTOR=<name>` (in PowerShell: `$env:BEADS_ACTOR = "<name>"`).

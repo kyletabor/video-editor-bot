@@ -156,7 +156,8 @@ set of plans that must be rejected.
 ## Changing this contract
 
 Bump `version` only for breaking changes. Add optional fields freely, with
-defaults, and update the examples. The other lane reviews the PR.
+defaults, and update the examples. The PR is reviewed under the dev process
+(AGENTS.md, loop step 7) before its author merges it.
 
 Changelog
 - v1.3 (2026-10-01, veb-iyl): `output.reel.transition.kind: module` with `transition.module`,

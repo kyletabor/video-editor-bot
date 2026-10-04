@@ -21,7 +21,7 @@ The primary path is the local CLI in this repository, driven by an agent skill.
 Intake is `clipbot` (`bot/`, Kyle's lane), rendering is `cliprender` (`render/`,
 Ramsey's lane), and the edit plan in `contract/` (v1.1, see
 [`contract/README.md`](../../../contract/README.md)) is the only interface between
-them; changing it requires opposite-side review. For summary reels, outlines,
+them; changing it takes a `lane:shared` task and a dev-process review. For summary reels, outlines,
 hand-picked moments and Markdown summaries use the
 [clipbot skill](../clipbot/SKILL.md); this skill covers keep/remove edits of one
 video. Both run with Python 3.11+ / uv and FFmpeg/ffprobe 4.4 or newer (pinned

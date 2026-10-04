@@ -81,7 +81,7 @@ def test_readme_is_about_the_tool_and_contributing_holds_the_process() -> None:
     assert "bd dolt" not in readme and "bd bootstrap" not in readme
     assert "clipbot reel" in readme and "cliprender" in readme
     assert "CONTRIBUTING.md" in readme
-    for needle in ("bd bootstrap", "lane:bot", "lane:render", "HANDOFF", "APPROVE", "MERGED"):
+    for needle in ("bd bootstrap", "lane:bot", "lane:render", "dev-process", "APPROVE", "PASS"):
         assert needle in contributing, needle
     assert len(readme.splitlines()) <= 200, "keep the README tight; details go to docs/ and CONTRIBUTING.md"
 
