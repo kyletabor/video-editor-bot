@@ -13,6 +13,7 @@ uv run --project bot clipbot outline --source talk.mp4 --out out/talk/outline.md
 uv run --project bot clipbot plan    --source talk.mp4 --request "the part about beads" --out out/talk/plan.json
 uv run --project bot clipbot summarize --source talk.mp4 --out out/talk/summary.md
 uv run --project bot clipbot audit-plan out/talk/plan.json --audio talk.wav [--words talk.words.json]
+uv run --project bot clipbot redact  --source talk.mp4 --redact auto --plan out/talk/plan.json
 ```
 
 ## Why a reel
@@ -220,6 +221,59 @@ names from a Google Meet "Notes by Gemini" transcript onto unlabelled cues by
 interpolated time + word overlap (`clipbot/speakers.py`); pass
 `--speakers-offset 0:22:00` when the notes' clock started before the video.
 It is best effort and never fails the run.
+
+## Blurring private details on screen (`clipbot/redact.py`)
+
+A shared screen can show an inbox, a calendar, a client list or a key clearly
+enough to read in a reel. `--redact` blurs it:
+
+```bash
+uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact auto --out out/talk/plan.json --render
+uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact auto --redact-terms names.txt ...
+uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact boxes.json ...
+```
+
+- **`auto`** reads a frame every second (`--redact-every`) inside the parts of
+  the recording the reel shows, with tesseract OCR, and blurs every word that
+  looks private: e-mail addresses, phone numbers, card numbers (Luhn-checked),
+  SSNs, API keys (`sk-`, `ghp_`, `AKIA`, ...) and long random-looking tokens,
+  plus anything in `--redact-terms FILE` (one name or phrase per line,
+  case-insensitive, `re:` for a regular expression). A word seen at one sample
+  is blurred from the sample before to the sample after; a frame that has not
+  changed since the last sample is not read twice.
+- **`text`** blurs every line of text OCR finds: the automatic version of
+  blurring the whole shared screen.
+- **A file** applies boxes drawn by hand: `[{"start": "12:30", "end": "13:05",
+  "box": [x, y, w, h], "why": "screen share"}]`, times in seconds or h:mm:ss,
+  the box in source pixels (find them on a frame grab:
+  `ffmpeg -ss 12:40 -i talk.mp4 -frames:v 1 frame.png`).
+
+The blur is written to a **redacted copy of the source**,
+`<out dir>/<source>.redacted.mp4`: same length and timestamps, audio copied
+untouched, text captions kept (as mp4 `mov_text`, so an MKV's SRT track comes
+along too), only the video re-encoded (about a quarter
+of the recording's length on a laptop; a re-run with the same boxes reuses
+the copy). The plan's `source.path` names the copy, so the renderer and the
+contract are unchanged and the original recording is never modified. Every
+run writes the boxes it used to `redactions.json` next to the plan, in the
+file format above: add a box OCR missed and re-run with
+`--redact out/talk/redactions.json`.
+
+`clipbot redact --source talk.mp4 --redact auto --plan out/talk/plan.json`
+does the same for a plan that already exists (it reads only the plan's
+segments and points the plan at the copy; render it again). Without `--plan`
+it reads the whole recording, one frame every 2 s.
+
+`auto` and `text` need tesseract (`brew install tesseract`,
+`sudo apt install tesseract-ocr`, or the UB Mannheim installer on Windows).
+Privacy fails closed: without tesseract, or when ffmpeg fails, the run stops
+instead of rendering an unblurred reel. OCR is not perfect (tiny or
+low-contrast text, images of text, handwriting), and the patterns are a net,
+not a guarantee: a street address, a name not in `--redact-terms`, a number
+written as words or a phone number with no separators and a country code
+(`14155550142`) is not caught. Use `text` or a hand-drawn box when a screen is
+sensitive throughout, and the presenter still watches the reel before it is
+shared.
 
 ## Rendering
 

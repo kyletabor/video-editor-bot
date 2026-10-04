@@ -13,12 +13,15 @@ labels unlabelled cues from a Gemini transcript (speakers.py). Word timings
 fillers and long pauses without ever clipping a word (cuts.py). `--framing FILE`
 sets every card around the moments from one JSON file (framing.py). `--style NAME`
 picks a style pack: its music, scored to the cards, and its transition (styles.py,
-score.py; `clipbot styles` lists them).
+score.py; `clipbot styles` lists them). `--redact auto|text|FILE` blurs private
+details on screen in a redacted copy of the source that the plan then names
+(redact.py; `clipbot redact` does the same for an existing plan).
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import json
 import os
@@ -35,6 +38,7 @@ from . import llm
 from . import outline as outl
 from . import plan as planmod
 from . import probe as probemod
+from . import redact as redactmod
 from . import reel as reelmod
 from . import score as scoremod
 from . import select as sel
@@ -269,6 +273,24 @@ def cmd_reel(a: argparse.Namespace) -> int:
     if a.keep_fillers:
         reports = []  # padded only: nothing to report per moment
 
+    # --redact (redact.py): blur private details on screen in a copy of the source, read only where
+    # the reel shows it (the final keep-lists), and point the plan at the copy. Fails closed.
+    plan_info = info
+    if a.redact:
+        shown = [seg for m in moments
+                 for seg in reelmod.segments_for(m, lead=a.lead_seconds, tail=a.tail_seconds, duration=info.duration_seconds)]
+        try:
+            copy, _ = redactmod.run(
+                info.path, a.redact, shown, out_dir, terms_file=a.redact_terms, every=a.redact_every,
+                duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
+            )
+        except Exception:
+            if out_path.is_file():
+                print(f"redact: {out_path} is left from an earlier run and is NOT redacted", file=sys.stderr)
+            raise
+        if copy:
+            plan_info = dataclasses.replace(info, path=str(copy))
+
     given = None
     if a.takeaways:
         given = Path(a.takeaways).read_text(encoding="utf-8").splitlines()
@@ -288,7 +310,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
     date = a.date or datetime.date.fromtimestamp(Path(a.source).stat().st_mtime).isoformat()
     summary_path = out_dir / "summary.md"
     plan = reelmod.build_reel_plan(
-        info, moments, out_dir=str(out_dir), title=title, date=date, preset=a.preset,
+        plan_info, moments, out_dir=str(out_dir), title=title, date=date, preset=a.preset,
         captions_kind=captions_kind, srt_path=srt_path, summary_path=str(summary_path),
         lead=a.lead_seconds, tail=a.tail_seconds, takeaways=takeaways, transition=a.transition or "dip",
         music=planmod.contract_path(a.music) if a.music else None, framing=framing,
@@ -397,6 +419,45 @@ def cmd_audit_plan(a: argparse.Namespace) -> int:
     return 1 if auditmod.offenders(readings, a.threshold_db) else 0
 
 
+def cmd_redact(a: argparse.Namespace) -> int:
+    """Blur private details on screen in a copy of the source (redact.py). With
+    --plan, only the plan's segments are read and the plan is pointed at the copy;
+    without it the whole recording is read (slow: one frame every --every seconds)."""
+    info = probemod.probe(a.source)
+    plan_path = Path(a.plan) if a.plan else None
+    if plan_path:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        planmod.validate(plan)
+        named = plan["source"]["path"]
+        # the plan names this recording, or the redacted copy an earlier run made of it
+        if named not in (planmod.contract_path(a.source), planmod.contract_path(redactmod.redacted_path(
+                a.source, Path(a.out_dir) if a.out_dir else plan_path.parent))):
+            raise ValueError(f"{plan_path} is a plan for {named}, not {a.source}")
+        spans = [(s["start"], s["end"]) for c in plan["clips"] for s in c["segments"]]
+        out_dir = Path(a.out_dir) if a.out_dir else plan_path.parent
+        every = a.every if a.every is not None else redactmod.EVERY_SECONDS
+    else:
+        spans = [(0.0, info.duration_seconds)]
+        out_dir = Path(a.out_dir) if a.out_dir else Path(a.source).parent
+        every = a.every if a.every is not None else 2.0
+    copy, redactions = redactmod.run(
+        info.path, a.redact, spans, out_dir, terms_file=a.terms, every=every,
+        duration=info.duration_seconds, log=lambda msg: print(msg, file=sys.stderr),
+    )
+    for r in redactions:
+        print(f"{_hms(r.start)}-{_hms(r.end)}\t{r.box[0]},{r.box[1]} {r.box[2]}x{r.box[3]}\t{r.why or 'manual'}")
+    if not copy:
+        print("nothing to blur; the source is used as is")
+        return 0
+    print(f"redacted copy: {copy}")
+    if plan_path:
+        plan["source"]["path"] = planmod.contract_path(copy)
+        planmod.validate(plan)
+        plan_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+        print(f"plan updated: {plan_path} (render it again)")
+    return 0
+
+
 def render(plan_path: Path) -> int:
     """Hand the plan to Ramsey's renderer in its own project and echo what it reports."""
     uv = shutil.which("uv")
@@ -446,6 +507,17 @@ def add_caption_args(p: argparse.ArgumentParser, speakers: bool = True) -> None:
         p.add_argument("--speakers", default=None, help="Gemini 'Notes by Gemini' transcript to take speaker names from")
         p.add_argument("--speakers-offset", default="0",
                        help="subtract this from the notes' clock (seconds or h:mm:ss) when it started before the video")
+
+
+def add_redact_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--redact", default=None, metavar="auto|text|FILE",
+                   help="blur private details on screen in a redacted copy of the source the plan then names: "
+                        "auto (OCR: e-mail addresses, phone numbers, keys, card numbers, --redact-terms), text (every "
+                        "line of text) or a redactions.json [{start, end, box: [x, y, w, h], why}]. auto/text need tesseract")
+    p.add_argument("--redact-terms", default=None,
+                   help="text file, one name or phrase per line (re: for a regex), blurred too with --redact auto")
+    p.add_argument("--redact-every", type=float, default=redactmod.EVERY_SECONDS,
+                   help=f"seconds between the frames --redact auto/text reads inside each moment (default {redactmod.EVERY_SECONDS:g})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -515,8 +587,22 @@ def main(argv: list[str] | None = None) -> int:
                          "a style directory also works)")
     pr.add_argument("--music", default=None,
                     help="music bed under the cards (audio file you have the rights to; see contract/README.md)")
+    add_redact_args(pr)
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)
+
+    prd = sub.add_parser("redact", help="blur private details on screen in a copy of the source (and point a plan at it)")
+    prd.add_argument("--source", required=True)
+    prd.add_argument("--redact", required=True, metavar="auto|text|FILE",
+                     help="auto: OCR the frames and blur e-mail addresses, phone numbers, keys, card numbers and "
+                          "--terms; text: blur every line of text; FILE: redactions.json [{start, end, box: [x, y, w, h], why}]")
+    prd.add_argument("--plan", default=None, help="read only this plan's segments, then point the plan at the copy")
+    prd.add_argument("--terms", default=None, help="text file, one name or phrase per line (re: for a regex), to blur too")
+    prd.add_argument("--every", type=float, default=None,
+                     help=f"seconds between the frames read (default {redactmod.EVERY_SECONDS:g} with --plan, 2 without)")
+    prd.add_argument("--out-dir", default=None,
+                     help="where redactions.json and <source>.redacted.mp4 go (default: the plan's folder, else the source's)")
+    prd.set_defaults(fn=cmd_redact)
 
     pst = sub.add_parser("styles", help="list the style packs (assets/styles/)")
     pst.set_defaults(fn=cmd_styles)
