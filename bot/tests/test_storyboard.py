@@ -89,3 +89,13 @@ def test_page_has_every_scene_the_strip_notes_and_escapes_text():
 def test_tile_name_pattern_accepts_names_not_ui_text():
     assert sb.NAME.match("Jeff Weiner") and sb.NAME.match("Ramsey Jamoul")
     assert not sb.NAME.match("localhost:8787") and not sb.NAME.match("you")
+
+
+def test_a_reel_that_opens_on_a_clip_has_no_opening_theme():
+    plan = json.loads(json.dumps(PLAN))
+    reel = plan["output"]["reel"]
+    del reel["intro"], reel["opening"]
+    plan["clips"][0].pop("cards")
+    reel["chapter_cards"] = "auto"  # the first clip has no card: the reel opens on speech
+    scenes = sb.scenes_of(plan)
+    assert scenes[0].kind == "clip" and not any(s.music.startswith("music IN: theme opens") for s in scenes)

@@ -84,7 +84,7 @@ def scenes_of(plan: dict) -> list[Scene]:
         out.append(Scene(0, "card", role, 0.0, float(spec.get("seconds", CARD_SECONDS)), spec.get("title", ""),
                          list(spec.get("lines", [])), spec.get("image"), spec.get("qr")))
 
-    if reel.get("intro"):
+    if reel.get("intro") is not None:
         card(reel["intro"], "intro")
     for spec in reel.get("opening", []):
         card(spec, "opening")
@@ -103,7 +103,7 @@ def scenes_of(plan: dict) -> list[Scene]:
                          layout="screen + speaker corner tile" if layout.get("kind") == "pip" else "full frame"))
     for spec in reel.get("closing", []):
         card(spec, "closing")
-    if reel.get("outro"):
+    if reel.get("outro") is not None:
         card(reel["outro"], "outro")
     at = 0.0
     transition = (reel.get("transition") or {}).get("kind", "cut")
@@ -135,7 +135,8 @@ def describe_music(scenes: list[Scene], music: dict | None) -> None:
             else:
                 runs.append([s])
     for k, run in enumerate(runs):
-        first, last = k == 0, k == len(runs) - 1 and run[-1] is scenes[-1]
+        # score.card_runs: "first" only when the reel opens on it, "last" only when the reel ends on it
+        first, last = run[0] is scenes[0], run[-1] is scenes[-1]
         for i, s in enumerate(run):
             s.music_on = True
             if first:
@@ -145,8 +146,8 @@ def describe_music(scenes: list[Scene], music: dict | None) -> None:
                 if s is run[-1]:
                     s.music += ", plays its ending"
             else:
-                s.music = "music STING: starts and stops on this slide" if len(run) == 1 else (
-                    "music STING starts" if i == 0 else "music continues, stops at the cut")
+                s.music = ("music STING: starts and stops on this slide (a longer slide gets a short vamp)"
+                           if len(run) == 1 else "music STING starts" if i == 0 else "music continues, stops at the cut")
     for s in scenes:
         if s.kind == "clip":
             s.music_on = under == "all"
