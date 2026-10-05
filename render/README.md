@@ -339,6 +339,63 @@ segments; a bridge is pinned to exactly the transition's frames (`tpad`, `trim`)
 both builds now give the same frame count. `fade`, `afade`, `adelay`, `amix`, `apad`,
 `tpad`, `astats` and `-stream_loop` on WAV measured identical on both builds.
 
+## Reel v1.4: pictures on cards, card lists, pip framing, overlays
+
+Contract v1.4 fields are all optional; a plan without them renders exactly as before
+(the per-part graph text is pinned by `tests/test_v14.py`, and a clip gets the new code
+path only when it has `layout: pip` or `overlays`).
+
+- **`card.image`** (`cliprender.cards`): a PNG or JPEG, resolved like every plan path
+  (repo-root-relative or absolute). On 16:9 the text keeps the left 55 % of the frame
+  and the picture is fitted into the right part; on 9:16 and 1:1 the text may use at most
+  60 % of the height above the footer band and the picture fills what is left below it.
+  Fitted, centred, never cropped, inside a 2 px border; a transparent PNG is flattened onto
+  the card background. The text layout runs unchanged on the narrower or shorter area, so
+  the shrink steps absorb the difference: the extremes tests (80-character title of long
+  words, four 120-character lines) also run with an image and a QR code on all three
+  aspects, without an ellipsis. Every card image of the reel is opened before the first
+  tool runs; a missing file, an unreadable one or a GIF fails the plan with its path.
+- **`card.qr`**: drawn with [segno](https://pypi.org/project/segno/) (pure Python, error
+  correction M, smallest version), placed like an image: black modules of whole pixels on a
+  white square with the four-module quiet zone the QR specification asks for, so a phone
+  can scan it off a screen, and the URL printed under it (wrapped by characters, up to four
+  rows) so it can also be typed. The tests compare every module's centre pixel with segno's
+  matrix for the exact URL, which is what a scanner reads.
+- **`clips[].cards`**: shown in order right before the clip, ahead of its `card`.
+  Decision: they show under every `chapter_cards` mode, `none` included, because they are
+  explicit section and link slides the author placed, not chapter markers the renderer may
+  synthesize or drop. The chapter footer (`k of N · h:mm:ss`) goes on the last card before
+  the clip only, so a run of slides is counted once; under `none` no card has a footer.
+  Consecutive cards are one card run, so a music bed plays through them without restarting.
+- **`clips[].layout: pip`** (`cliprender.framing`, 16:9 only; 9:16 and 1:1 warn and render
+  the full frame): the `screen` region is cropped and scaled to fit the clip's usual 16:9
+  frame keeping its shape. If the frame has a band left beside or below it and the speaker
+  tile fits that band at least 18 % of the frame high, the tile goes in the band at `corner`
+  and the screen moves away from that corner (top-centred for a wide share). Otherwise the
+  screen is centred and the tile laid over it at 24 % of the frame width, with a margin of
+  2.5 % of the height and a 2 px light border. The band is the card background colour.
+  Without `speaker` the screen alone is fitted and letterboxed. Regions must lie inside
+  the source frame (as the graph receives it, after autorotation) and be at least 2 x 2,
+  or the plan fails before any encode. The geometry is one chain (`split`, `crop`, `scale`,
+  `pad`, `overlay`) in place of the usual geometry filters of every part's graph, so parts,
+  joins and verification are unchanged. When the tile sits in a bottom corner, burned
+  captions get symmetric libass margins (`force_style`, script units of width / 384, which
+  is how libass scales an SRT's margins; measured) that keep them centred and clear of it.
+  The output frame is never larger than the source; the screen region is enlarged to fill
+  it, which is the point of the layout.
+- **`clips[].overlays`** (`cliprender.overlays`): burned with libass, not `drawtext`
+  (Homebrew's plain FFmpeg has no FreeType; libass is already needed for captions). Each
+  kept frame is tested on its own: a label shows while the frame's *source* time is in
+  `[start, end)`, consecutive frames that pass become one ASS event, and the event edges
+  are put between frames (centisecond ASS times, 2 ms of slack for FFmpeg's millisecond
+  rounding, exact up to 60 fps), so reordered or non-contiguous segments never put a label
+  on the wrong picture. One `.ass` script per clip, at the frame's pixel size: white text
+  on a semi-opaque dark box, about 3.2 % of the frame height, top-left (`top`) or
+  bottom-left (`bottom`), switched to the right side when a pip tile occupies that corner.
+  It is burned after captions, whatever `output.captions` is (`none` and `sidecar_srt`
+  included). Braces and backslashes in a label are shown as look-alikes rather than read
+  as ASS tags.
+
 ## Development and measured checks
 
 ```sh
