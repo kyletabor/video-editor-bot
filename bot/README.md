@@ -222,6 +222,27 @@ interpolated time + word overlap (`clipbot/speakers.py`); pass
 `--speakers-offset 0:22:00` when the notes' clock started before the video.
 It is best effort and never fails the run.
 
+## Storyboard before rendering (`clipbot storyboard`)
+
+Reviewing a reel by watching it was slow: by the time Kyle heard the music jump and saw
+the wrong clip open the Talk #3 reel, an hour of rendering and blurring had been spent.
+Editors agree on paper first, so the bot writes the paper: one page with every scene in
+playback order. Each scene shows its time on the reel and length, a frame, who talks
+(read with OCR off the Meet tile, since the recording names the active speaker), what
+they say (word timings, else captions), the slide or label text, what the audio does
+(theme in, sting, ending, speech only) and the transition. A strip at the top draws the
+whole reel to scale with the music under it. Nothing is rendered.
+
+```bash
+uv run --project bot --extra vision clipbot reel ... --out out/talk/plan.json        # plan only, no --render
+uv run --project bot --extra vision clipbot storyboard --plan out/talk/plan.json --out out/talk/storyboard.html \
+  --words talk.words.json --thumbs-from talk.redacted.mp4 --note "Music only at the ends"
+```
+
+`--thumbs-from` takes the frames from another copy (a blurred one, so the page never
+shows what the reel will hide); `--note` adds lines to a "decisions for review" box.
+Publish the page where the reviewer can comment, settle it, then render.
+
 ## Telling the reel as a story (`clipbot/story.py`, contract v1.4)
 
 A reel of good moments with one title card each did not teach Talk #3 to someone who

@@ -419,6 +419,29 @@ def cmd_audit_plan(a: argparse.Namespace) -> int:
     return 1 if auditmod.offenders(readings, a.threshold_db) else 0
 
 
+def cmd_storyboard(a: argparse.Namespace) -> int:
+    """A plan as a storyboard page (storyboard.py): scenes, speakers, words, slides, audio."""
+    from . import storyboard as sb
+
+    plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
+    planmod.validate(plan)
+    caps = plan["source"].get("captions") or {}
+    srt = a.srt or (caps.get("path") if caps.get("kind") == "srt" else None)
+    if srt:
+        cues = cap.parse_srt(Path(srt).read_text(encoding="utf-8"))
+    else:
+        cues = cap.parse_srt(cap.extract_embedded_srt(plan["source"]["path"]))
+    cues = add_speakers(a, cues)
+    words = wordsmod.load_words(a.words) if a.words else None
+    page = sb.build(plan, cues, words=words, source=a.thumbs_from or plan["source"]["path"], title=a.title,
+                    notes=a.note or [])
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+    print(f"storyboard written: {out}")
+    return 0
+
+
 def cmd_redact(a: argparse.Namespace) -> int:
     """Blur private details on screen in a copy of the source (redact.py). With
     --plan, only the plan's segments are read and the plan is pointed at the copy;
@@ -611,6 +634,18 @@ def main(argv: list[str] | None = None) -> int:
     add_redact_args(pr)
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)
+
+    psb = sub.add_parser("storyboard", help="a plan as one review page: every scene, who talks, what is said, the audio")
+    psb.add_argument("--plan", required=True)
+    psb.add_argument("--out", required=True, help="the HTML page to write")
+    psb.add_argument("--srt", default=None, help="captions (default: the plan's)")
+    psb.add_argument("--words", default=None, help="word timings JSON, for exact quotes")
+    psb.add_argument("--speakers", default=None, help="Gemini notes, to name who talks (see reel --speakers)")
+    psb.add_argument("--speakers-offset", default="0")
+    psb.add_argument("--thumbs-from", default=None, help="take frames from this video instead (e.g. a redacted copy)")
+    psb.add_argument("--title", default=None)
+    psb.add_argument("--note", action="append", help="a line for the 'decisions for review' box at the top (repeatable)")
+    psb.set_defaults(fn=cmd_storyboard)
 
     prd = sub.add_parser("redact", help="blur private details on screen in a copy of the source (and point a plan at it)")
     prd.add_argument("--source", required=True)
