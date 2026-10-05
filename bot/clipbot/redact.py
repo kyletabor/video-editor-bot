@@ -89,6 +89,8 @@ MOTION_DELTA = 12  # a thumbnail pixel that changed by more than this counts as 
 MOTION_SHARE = 0.02  # this share changed between two samples: the screen moved, look in between
 SAME_FRAME_DIFF = 8  # a sample whose thumbnail differs by this much anywhere is read again
 CHECK_EVERY = 0.5  # seconds between the frames of the redacted copy that `run` reads back
+CHECK_SCALE = 4  # the check reads tiles larger than detection (3x): a reel enlarges the screen, and Talk #3's
+# reel showed a client's name that 3x reads of the blurred copy had missed
 CHECK_ROUNDS = 2  # detect -> blur -> read the copy -> blur what is still readable, at most this often
 STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
 REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
@@ -918,7 +920,7 @@ def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: f
             thumb = tmpdir / f"c{k:06d}.gray"
             if engine == "vision":
                 pngs = [tmpdir / f"c{k:06d}-{n:03d}.png" for n in range(len(tiles))]
-                args = tile_frame_args(video, t, tiles, pngs, thumb)
+                args = tile_frame_args(video, t, tiles, pngs, thumb, scale=CHECK_SCALE)
             else:
                 pngs = [tmpdir / f"c{k:06d}.png"]
                 args = frame_args(video, t, pngs[0], thumb)
