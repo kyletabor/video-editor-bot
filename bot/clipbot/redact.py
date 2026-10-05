@@ -613,6 +613,37 @@ def split_line(text: str, conf: float, line: tuple[int, int, int], rect: tuple[i
     return words
 
 
+def _vision_tiles(pngs: list[str], tiles: list[tuple[int, int, int, int]]) -> list[Word]:
+    """Worker-process side of `vision_frame`."""
+    words: list[Word] = []
+    for n, (png, rect) in enumerate(zip(pngs, tiles)):
+        words += vision_words(Path(png), rect, tile=n)
+    return words
+
+
+_VISION_POOL = None
+VISION_TASKS_PER_PROCESS = 40  # frames one OCR process reads before it is replaced
+
+
+def vision_frame(pngs: list[Path], tiles: list[tuple[int, int, int, int]]) -> list[Word]:
+    """All tiles of one frame read with Apple Vision in a worker process.
+
+    Why processes, recycled: in one long-lived process Vision started failing every
+    request (imageOperationFailed) after about 800 frames of Talk #3, while the same
+    tile read fine in a fresh process. Each worker reads VISION_TASKS_PER_PROCESS
+    frames and is replaced, so a two-hour scan never reaches that state."""
+    global _VISION_POOL
+    if _VISION_POOL is None:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        kwargs = {"max_workers": WORKERS, "mp_context": multiprocessing.get_context("spawn")}
+        if sys.version_info >= (3, 11):
+            kwargs["max_tasks_per_child"] = VISION_TASKS_PER_PROCESS
+        _VISION_POOL = ProcessPoolExecutor(**kwargs)
+    return _VISION_POOL.submit(_vision_tiles, [str(p) for p in pngs], list(tiles)).result()
+
+
 def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -> list[Word]:
     """Read one upscaled tile with Apple Vision; boxes come back in source pixels."""
     import objc
@@ -773,10 +804,7 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
 
         def ocr_frame(pngs: list[Path]) -> list[Word]:
             if engine == "vision":
-                words: list[Word] = []
-                for n, (png, rect) in enumerate(zip(pngs, tiles)):
-                    words += vision_words(png, rect, tile=n)
-                return words
+                return vision_frame(pngs, tiles)
             # One thread per tesseract: its OpenMP threads on top of WORKERS processes thrash (40x slower here).
             proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
                                   text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
@@ -871,8 +899,7 @@ def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: f
             subprocess.run(args, capture_output=True, text=True, check=True)
             words: list[Word] = []
             if engine == "vision":
-                for n, (png, rect) in enumerate(zip(pngs, tiles)):
-                    words += vision_words(png, rect, tile=n)
+                words = vision_frame(pngs, tiles)
             else:
                 proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
                                       text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
