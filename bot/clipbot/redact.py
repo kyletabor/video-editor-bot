@@ -1016,6 +1016,8 @@ def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, i
         if not hits:
             log(f"redact: read back {frames} frames of the copy: nothing private readable")
             return redactions
+        for t, why, text in hits:  # where, what kind and how long: enough to find it, without printing it
+            log(f"redact:   still readable at {t:.2f} s: {why}, {len(text)} characters")
         if k == rounds:
             unsafe = copy.with_name(copy.stem + ".unsafe" + copy.suffix)
             copy.replace(unsafe)
