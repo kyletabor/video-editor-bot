@@ -509,6 +509,19 @@ def add_caption_args(p: argparse.ArgumentParser, speakers: bool = True) -> None:
                        help="subtract this from the notes' clock (seconds or h:mm:ss) when it started before the video")
 
 
+def cmd_redact_video(a: argparse.Namespace) -> int:
+    """Blur a rendered reel in place of the source recording (redact.redact_video)."""
+    video = Path(a.video)
+    out = Path(a.out) if a.out else video.with_name(video.stem + ".redacted" + video.suffix)
+    info = redactmod.video_info(video)
+    extra = redactmod.load_redactions(a.boxes, info.width, info.height, info.duration) if a.boxes else []
+    rs = redactmod.redact_video(video, out, terms_file=a.terms, every=a.every, ocr=a.ocr, extra=extra,
+                                log=lambda msg: print(msg, file=sys.stderr))
+    redactmod.write_redactions(out.with_suffix(".redactions.json"), rs)
+    print(f"blurred copy: {out} ({len(rs)} region(s), read back clean)")
+    return 0
+
+
 def cmd_check_redaction(a: argparse.Namespace) -> int:
     """OCR a rendered reel or clip and list private details still readable (redact.leak_check)."""
     terms = redactmod.compile_terms(Path(a.terms).read_text(encoding="utf-8").splitlines()) if a.terms else []
@@ -626,6 +639,15 @@ def main(argv: list[str] | None = None) -> int:
     prd.add_argument("--out-dir", default=None,
                      help="where redactions.json and <source>.redacted.mp4 go (default: the plan's folder, else the source's)")
     prd.set_defaults(fn=cmd_redact)
+
+    prv = sub.add_parser("redact-video", help="blur private details in a rendered reel or clip (detect, blur, read back)")
+    prv.add_argument("--video", required=True, help="the rendered reel or clip")
+    prv.add_argument("--out", default=None, help="the blurred copy (default: <video>.redacted.mp4 next to it)")
+    prv.add_argument("--terms", default=None, help="text file, one name or phrase per line (re: for a regex), to blur too")
+    prv.add_argument("--boxes", default=None, help="redactions.json of boxes drawn by hand, blurred as well")
+    prv.add_argument("--every", type=float, default=redactmod.EVERY_SECONDS, help="seconds between the frames read")
+    prv.add_argument("--ocr", default="auto", choices=redactmod.OCR_ENGINES, help=OCR_HELP)
+    prv.set_defaults(fn=cmd_redact_video)
 
     pck = sub.add_parser("check-redaction", help="OCR a rendered video and list private details still readable")
     pck.add_argument("--video", required=True, help="the rendered reel or clip")

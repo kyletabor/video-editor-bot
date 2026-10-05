@@ -95,7 +95,7 @@ CHECK_ROUNDS = 2  # detect -> blur -> read the copy -> blur what is still readab
 STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
 REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
 MAX_REFINE = 3  # extra samples where the screen moved, at most this many per regular sample
-WORKERS = 4
+WORKERS = max(4, (os.cpu_count() or 8) // 2)  # OCR and ffmpeg readers in parallel; half the cores leaves room for Vision
 BLUR_RADIUS = 20  # luma box radius, 3 passes: a 7-60 px word comes out as a smudge
 ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
 TAG = "clipbot-redact"
@@ -1043,6 +1043,27 @@ def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, i
         redactions = merge(redactions + extra)
         apply(source, redactions, copy, log=log)
     return redactions
+
+
+def redact_video(video: str | Path, out: str | Path, *, terms_file: str | None = None, every: float = EVERY_SECONDS,
+                 ocr: str = "auto", extra: list[Redaction] = (), log=lambda msg: None) -> list[Redaction]:
+    """Blur private details in a rendered reel or clip: detect, blur into `out`, read
+    `out` back and patch what is still readable (check_and_patch).
+
+    Why the reel and not the source: Talk #3's reel kept 7 of the recording's 67
+    minutes, but every blur pass on the source re-encoded all 67 (12 minutes a pass,
+    three passes). The reel is what viewers see, so it is also where the check has
+    to pass; working on it makes each pass about a minute. `extra` adds boxes drawn
+    by hand (a redactions file) on top of what OCR finds."""
+    info = video_info(video)
+    terms = compile_terms(Path(terms_file).read_text(encoding="utf-8").splitlines()) if terms_file else []
+    duration = info.duration or 0.0
+    spans = [(0.0, duration)]
+    found = detect(video, spans, info=info, every=every, terms=terms, ocr=ocr, log=log)
+    redactions = merge(list(found) + list(extra))
+    log(f"redact: {len(redactions)} region(s) to blur in {Path(video).name}")
+    apply(video, redactions, out, log=log)
+    return check_and_patch(video, Path(out), redactions, spans, info=info, terms=terms, ocr=ocr, log=log)
 
 
 def merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:

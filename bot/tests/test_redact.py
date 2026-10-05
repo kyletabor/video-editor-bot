@@ -646,3 +646,18 @@ def test_vision_frame_recycles_workers_and_retries_a_failed_frame_once(monkeypat
         assert rd.vision_frame([Path("a.png")], [(0, 0, 10, 10)])
     # worker 1 failed on its 3rd frame -> a fresh worker read it; that one is replaced after 3 frames
     assert len(made) == 3 and [w.done for w in made] == [2, 3, 1]
+
+
+@pytest.mark.skipif(not _vision_ready(), reason="needs ffmpeg, macOS and the vision extra")
+def test_redact_video_blurs_a_rendered_reel_and_reads_it_back_clean(tmp_path, capsys):
+    png, reel = tmp_path / "screen.png", tmp_path / "reel.mp4"
+    _draw_screen(png, [("Call 816-555-0144 about the invoice", 300, 300),
+                       ("Weekly notes for Robin", 300, 800)], size=11.0)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-loop", "1", "-i", str(png), "-t", "3", "-r", "25",
+                    "-vf", "scale=1920:1080", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reel)], check=True)
+    terms = tmp_path / "names.txt"
+    terms.write_text("Robin\n")
+    assert cli.main(["redact-video", "--video", str(reel), "--terms", str(terms)]) == 0
+    copy = tmp_path / "reel.redacted.mp4"
+    assert copy.is_file() and "read back clean" in capsys.readouterr().out
+    assert cli.main(["check-redaction", "--video", str(copy), "--terms", str(terms), "--every", "1"]) == 0
