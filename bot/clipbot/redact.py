@@ -37,11 +37,13 @@ Vision reads each frame as overlapping tiles (`VISION_TILE`, `VISION_STEP`),
 each upscaled `VISION_SCALE` times: whole-frame Vision downsamples the image and
 loses the small text too.
 
-A word seen at sample t was not seen at t - every, so each detection is blurred
-from the sample before it to the sample after it (`every` on each side) and
-consecutive detections of the same box are merged into one range. A frame that
-did not change since the previous sample (a static slide, a paused screen) is
-not read again: its detections carry over.
+Where two neighbouring samples differ a lot (a scroll, a page switch), more are taken
+in between, down to one frame apart, so a moving word is boxed where it actually is.
+Samples that show the same screen form a run; a run is OCR'd a few times (OCR misses
+a word in one frame and reads it in the next) and everything found is blurred for the
+whole run, from the sample before it to the sample after it. The blur itself is one
+blurred copy of each frame shown through a mask track (`write_mask_track`), so its cost
+does not grow with the number of boxes.
 
 Privacy fails closed: missing tesseract or an ffmpeg error stops the run, it
 never falls back to an unredacted reel. OCR misses things (tiny or low-contrast
@@ -82,7 +84,11 @@ TEXT_MODE_CONFIDENCE = 40  # `text` mode skips the noise OCR reports on faces an
 PAD_PIXELS = 6  # around every OCR box: glyph tops, descenders and anti-aliasing
 MIN_BOX = 16  # boxblur needs room for its radius; nothing smaller hides a glyph
 THUMB = (192, 108)  # grey thumbnail compared between samples
-SAME_FRAME_DIFF = 8  # largest per-pixel |Δ| on it for two samples to count as the same picture
+MOTION_DELTA = 12  # a thumbnail pixel that changed by more than this counts as changed
+MOTION_SHARE = 0.05  # this share changed between two samples: the screen moved, look in between
+STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
+REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
+MAX_REFINE = 3  # extra samples where the screen moved, at most this many per regular sample
 WORKERS = 4
 BLUR_RADIUS = 20  # luma box radius, 3 passes: a 7-60 px word comes out as a smudge
 ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
@@ -631,26 +637,97 @@ def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -
         return words
 
 
-def _thumb_diff(a: bytes | None, b: bytes | None) -> float:
+def thumb_args(source: str | Path, t: float, thumb: Path) -> list[str]:
+    """Only the grey thumbnail at t: cheap enough to take many times over a scroll."""
+    return ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", f"{max(t, 0):.3f}", "-i", str(source),
+            "-vf", f"scale={THUMB[0]}:{THUMB[1]}:flags=area,format=gray", "-frames:v", "1", "-f", "rawvideo", str(thumb)]
+
+
+def changed_share(a: bytes | None, b: bytes | None) -> float:
+    """Share of thumbnail pixels that changed by more than MOTION_DELTA (1.0 when unknown).
+    A call's speaker tile moves all the time but is a few percent of the frame; a scroll
+    or a page switch changes much more."""
     if not a or not b or len(a) != len(b):
-        return 255.0
-    return float(max(abs(x - y) for x, y in zip(a, b)))
+        return 1.0
+    return sum(1 for x, y in zip(a, b) if abs(x - y) > MOTION_DELTA) / len(a)
+
+
+def refine(times: list[float], thumbs: list[bytes | None], take_thumbs, *, every: float, step: float,
+           budget: int) -> tuple[list[float], list[bytes | None]]:
+    """Add samples where the picture moved between two neighbours (a scroll, a page
+    switch) until neighbours are one frame (`step`) apart or alike, at most `budget`
+    extra samples. Why: a word seen at 1 s and again at 2 s after a scroll is in two
+    places; a blur from 0 to 2 s at the first place leaves the second readable (Talk #3:
+    a client's name showed for a second mid-scroll)."""
+    added = 0
+    while added < budget:
+        mids = [(times[i] + times[i + 1]) / 2 for i in range(len(times) - 1)
+                if step * 1.5 < times[i + 1] - times[i] <= every + 0.01
+                and changed_share(thumbs[i], thumbs[i + 1]) >= MOTION_SHARE]
+        mids = mids[:budget - added]
+        if not mids:
+            break
+        merged = sorted(zip(times + mids, thumbs + take_thumbs(mids)), key=lambda p: p[0])
+        times, thumbs = [t for t, _ in merged], [th for _, th in merged]
+        added += len(mids)
+    return times, thumbs
+
+
+def stretches(times: list[float], thumbs: list[bytes | None], every: float) -> list[tuple[int, int]]:
+    """[first, last] sample indices of each run that shows one unchanged screen
+    (compared with the run's first frame, so slow drift ends a run too)."""
+    runs: list[tuple[int, int]] = []
+    for k in range(len(times)):
+        if (runs and times[k] - times[k - 1] <= every + 0.01
+                and changed_share(thumbs[runs[-1][0]], thumbs[k]) < STILL_SHARE):
+            runs[-1] = (runs[-1][0], k)
+        else:
+            runs.append((k, k))
+    return runs
+
+
+def readings(run: tuple[int, int], times: list[float]) -> list[int]:
+    """Which samples of a run to OCR: the first, then one every REREAD_SECONDS, and the
+    last. OCR misses a word in one frame and reads it in the next, so a still screen is
+    read more than once and what any reading found is blurred for the whole run."""
+    first, last = run
+    picked = [first]
+    for k in range(first + 1, last + 1):
+        if times[k] - times[picked[-1]] >= REREAD_SECONDS or (k == last and times[k] - times[picked[-1]] >= 1.0):
+            picked.append(k)
+    return picked
 
 
 def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoInfo, every: float = EVERY_SECONDS,
            terms: list[re.Pattern[str]] = (), all_text: bool = False, ocr: str = "auto",
            log=lambda msg: None) -> list[Redaction]:
-    """Sample, OCR and box (module docstring). Raises RuntimeError when the OCR engine is missing."""
+    """Sample, OCR and box (module docstring). Raises RuntimeError when the OCR engine is missing.
+
+    1. A grey thumbnail every `every` seconds inside the spans; where neighbours differ
+       a lot (a scroll), more thumbnails in between, down to one frame (`refine`).
+    2. Runs of samples that show the same screen (`stretches`); each run is OCR'd a few
+       times (`readings`) and everything found is blurred for the whole run, from the
+       sample before it to the sample after it. A sample in motion is a run of one, so
+       its blur spans only the frames between its neighbours."""
     engine = resolve_ocr(ocr)
     tesseract = shutil.which("tesseract") if engine == "tesseract" else None
     tiles = tile_rects(info.width, info.height) if engine == "vision" else []
     times = sample_times(spans, every)
     if not times:
         return []
-    log(f"redact: reading {len(times)} frames (every {every:g} s) with {engine} "
-        f"for {'all text' if all_text else 'private details'}")
     with tempfile.TemporaryDirectory(prefix="clipbot-redact-") as tmp:
         tmpdir = Path(tmp)
+        counter = iter(range(10 ** 9))
+
+        def thumb_at(t: float) -> bytes | None:
+            path = tmpdir / f"t{next(counter):06d}.gray"
+            proc = subprocess.run(thumb_args(source, t, path), capture_output=True, text=True)
+            if proc.returncode:
+                raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
+                                   f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
+            data = path.read_bytes() if path.is_file() else None
+            path.unlink(missing_ok=True)
+            return data
 
         def grab(k_t):
             k, t = k_t
@@ -665,9 +742,8 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
             if proc.returncode or not all(p.is_file() for p in pngs):
                 raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
                                    f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
-            data = thumb.read_bytes() if thumb.is_file() else None
             thumb.unlink(missing_ok=True)
-            return pngs, data
+            return pngs
 
         def ocr_frame(pngs: list[Path]) -> list[Word]:
             if engine == "vision":
@@ -682,41 +758,42 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
                 raise RuntimeError(f"redact: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
             return parse_tsv(proc.stdout, OCR_SCALE)
 
-        # Chunk by chunk, so a whole-recording scan never holds thousands of 4K PNGs on disk at once.
-        # A frame that is the same picture as the frame last read (compared with that frame, not just
-        # the previous sample, so slow drift adds up and forces a new read) reuses its words.
-        owner: list[int] = []
-        last_read: bytes | None = None  # thumbnail of the frame last sent to OCR
-        read: dict[int, list[Word]] = {}
-        chunk = WORKERS * 16
+        def read_one(k: int) -> list[tuple[tuple[int, int, int, int], str]]:
+            pngs = grab((k, times[k]))
+            try:
+                return find_sensitive(ocr_frame(pngs), terms=terms, all_text=all_text)
+            finally:
+                for png in pngs:
+                    png.unlink(missing_ok=True)
+
         try:
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                for lo in range(0, len(times), chunk):
-                    ks = range(lo, min(lo + chunk, len(times)))
-                    pngs = dict(zip(ks, pool.map(grab, ((k, times[k]) for k in ks))))
-                    todo = []
-                    for k in ks:
-                        thumb = pngs[k][1]
-                        same = (k and times[k] - times[k - 1] <= every + 0.01
-                                and _thumb_diff(thumb, last_read) < SAME_FRAME_DIFF)
-                        owner.append(owner[k - 1] if same else k)
-                        if not same:
-                            todo.append(k)
-                            last_read = thumb
-                    read.update(zip(todo, pool.map(lambda k: ocr_frame(pngs[k][0]), todo)))
-                    for files, _ in pngs.values():
-                        for png in files:
-                            png.unlink(missing_ok=True)
+                base = len(times)
+                thumbs = list(pool.map(thumb_at, times))
+                times, thumbs = refine(times, thumbs, lambda ts: list(pool.map(thumb_at, ts)), every=every,
+                                       step=1.0 / info.fps, budget=MAX_REFINE * base)
+                runs = stretches(times, thumbs, every)
+                todo = sorted({k for run in runs for k in readings(run, times)})
+                log(f"redact: {base} samples (every {every:g} s) + {len(times) - base} where the screen moved; "
+                    f"{len(runs)} distinct screens, {len(todo)} read with {engine} "
+                    f"for {'all text' if all_text else 'private details'}")
+                # one frame at a time through the pool: a whole-recording scan never holds thousands of PNGs
+                hits = dict(zip(todo, pool.map(read_one, todo)))
         except FileNotFoundError as e:
             raise RuntimeError("ffmpeg not found on PATH") from e
-        log(f"redact: OCR on {len(read)} distinct frames ({len(times) - len(read)} unchanged, reused)")
+
+    def near(i: int, j: int) -> bool:
+        return 0 <= i < len(times) and 0 <= j < len(times) and abs(times[j] - times[i]) <= every + 0.01
 
     found: list[Redaction] = []
-    for k, t in enumerate(times):
-        for box, why in find_sensitive(read[owner[k]], terms=terms, all_text=all_text):
-            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 4)
-            if clamped:
-                found.append(Redaction(max(0.0, t - every), t + every, clamped, why))
+    for first, last in runs:
+        start = times[first - 1] if near(first - 1, first) else times[first] - every
+        end = times[last + 1] if near(last, last + 1) else times[last] + every
+        for k in readings((first, last), times):
+            for box, why in hits.get(k, []):
+                clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 4)
+                if clamped:
+                    found.append(Redaction(max(0.0, start), end, clamped, why))
     return [_clip_to_spans(r, spans, every) for r in merge(found)]
 
 

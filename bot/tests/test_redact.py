@@ -151,6 +151,9 @@ TSV = (
     "5\t1\t1\t1\t1\t2\t360\t700\t400\t40\t91.0\tpat@example.com\n"
     "5\t1\t1\t1\t1\t3\t780\t700\t30\t40\t-1\t \n"
 )
+TSV_HEADER = TSV.splitlines(keepends=True)[0]
+TSV_ROW = "5\t1\t1\t1\t1\t1\t200\t300\t140\t40\t95\t{text}\n"
+THUMB_SIZE = rd.THUMB[0] * rd.THUMB[1]
 
 
 def test_parse_tsv_keeps_words_and_undoes_the_upscale():
@@ -219,6 +222,55 @@ def test_all_text_mode_boxes_each_readable_line():
         + line_words("noise", y=500, line=(2, 1, 1), conf=12)
     hits = rd.find_sensitive(words, all_text=True)
     assert hits == [(rd.union(words[0].box, words[1].box), "text")]  # one-letter and low-confidence lines skipped
+
+
+def test_refine_adds_samples_only_where_the_screen_moved():
+    still, moved = bytes(100), bytes([200] * 100)
+    picture = lambda t: moved if t >= 2.3 else still  # the screen scrolls at 2.3 s
+    times, thumbs = rd.refine([0.0, 1.0, 2.0, 3.0, 4.0], [picture(t) for t in (0, 1, 2, 3, 4)],
+                              lambda ts: [picture(t) for t in ts], every=1.0, step=0.04, budget=50)
+    extra = [t for t in times if t not in (0, 1, 2, 3, 4)]
+    assert extra and all(2.0 < t < 3.0 for t in extra)  # only between the samples either side of the change
+    edge = [b - a for a, b in zip(times, times[1:]) if picture(a) != picture(b)]
+    assert edge == [pytest.approx(1 / 32)]  # halved down to under 1.5 frames
+    capped, _ = rd.refine([0.0, 1.0], [still, moved], lambda ts: [moved for _ in ts], every=1.0, step=0.001, budget=3)
+    assert len(capped) == 5  # the budget holds
+
+
+def test_stretches_and_readings():
+    a, b = bytes(100), bytes([200] * 100)
+    times = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0]
+    thumbs = [a, a, a, a, b, b, b, b]
+    runs = rd.stretches(times, thumbs, every=1.0)
+    assert runs == [(0, 3), (4, 6), (7, 7)]  # a new screen at 4 s; 10 s is a new span
+    assert rd.readings((0, 3), times) == [0, 3] and rd.readings((7, 7), times) == [7]
+    long = [float(t) for t in range(10)]
+    assert rd.readings((0, 9), long) == [0, 3, 6, 9]
+
+
+def test_detect_blurs_a_whole_still_run_with_what_any_reading_found(monkeypatch, tmp_path):
+    """OCR reads the name at 2 s only; the blur still covers the run, 0-1 s before to after it."""
+    monkeypatch.setattr(rd, "resolve_ocr", lambda ocr: "tesseract")
+    monkeypatch.setattr(rd.shutil, "which", lambda name: "/bin/tesseract")
+    still = bytes(THUMB_SIZE)
+
+    def fake_run(args, **kw):
+        if "-f" in args and args[args.index("-f") + 1] == "rawvideo" and "-filter_complex" not in args:
+            Path(args[-1]).write_bytes(still)  # thumb_args
+        elif args[0] == "ffmpeg":
+            for a in args:
+                if a.endswith(".png"):
+                    Path(a).write_bytes(b"x")
+        else:  # tesseract: the name is read at 3 s only
+            k = int(Path(args[1]).name[1:6])  # the sample's index: 0, 1, 2, 3 s and 3.95 s
+            tsv = TSV_HEADER + (TSV_ROW.format(text="Robin") if k == 3 else "")
+            return subprocess.CompletedProcess(args, 0, tsv, "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(rd.subprocess, "run", fake_run)
+    rs = rd.detect("x.mp4", [(0.0, 4.0)], info=rd.VideoInfo(640, 360, 25.0), every=1.0,
+                   terms=rd.compile_terms(["Robin"]))
+    assert [r.why for r in rs] == ["term"] and rs[0].start == 0.0 and rs[0].end >= 4.0
 
 
 def test_detect_fails_closed_without_tesseract(monkeypatch):
