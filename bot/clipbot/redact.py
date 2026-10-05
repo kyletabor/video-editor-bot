@@ -85,7 +85,10 @@ PAD_PIXELS = 6  # around every OCR box: glyph tops, descenders and anti-aliasing
 MIN_BOX = 16  # boxblur needs room for its radius; nothing smaller hides a glyph
 THUMB = (192, 108)  # grey thumbnail compared between samples
 MOTION_DELTA = 12  # a thumbnail pixel that changed by more than this counts as changed
-MOTION_SHARE = 0.05  # this share changed between two samples: the screen moved, look in between
+MOTION_SHARE = 0.02  # this share changed between two samples: the screen moved, look in between
+SAME_FRAME_DIFF = 8  # a sample whose thumbnail differs by this much anywhere is read again
+CHECK_EVERY = 0.5  # seconds between the frames of the redacted copy that `run` reads back
+CHECK_ROUNDS = 2  # detect -> blur -> read the copy -> blur what is still readable, at most this often
 STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
 REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
 MAX_REFINE = 3  # extra samples where the screen moved, at most this many per regular sample
@@ -306,7 +309,7 @@ def filter_graph(info: "VideoInfo") -> str:
     blur = f"boxblur=luma_radius={luma}:luma_power=3:chroma_radius={chroma}:chroma_power=3"
     return (f"[0:v]split=2[base][soft];[soft]{blur}[blur];"
             f"[1:v]fps={info.fps:.6f},format=gray,scale={info.width}:{info.height}[mask];"
-            "[blur][mask]alphamerge[masked];[base][masked]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[vout]")
+            "[blur][mask]alphamerge[masked];[base][masked]overlay=0:0:eof_action=pass:shortest=1:format=auto,format=yuv420p[vout]")
 
 
 def fingerprint(source: str | Path, redactions: list[Redaction]) -> str:
@@ -490,8 +493,13 @@ def compile_terms(lines: list[str]) -> list[re.Pattern[str]]:
     return out
 
 
-def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_text: bool = False
-                   ) -> list[tuple[tuple[int, int, int, int], str]]:
+def sensitive_hits(words: list[Word], *, terms: list[re.Pattern[str]] = ()) -> list[tuple[tuple[int, int, int, int], str, str]]:
+    """(box, kind, matched text) for every private detail in `words` (see find_sensitive)."""
+    return find_sensitive(words, terms=terms, with_text=True)
+
+
+def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_text: bool = False,
+                   with_text: bool = False) -> list[tuple]:
     """(box, why) for every match. Patterns run over whole OCR lines so a phone
     number or a name split into several words is caught; the box is the union
     of the words the match touches."""
@@ -507,7 +515,7 @@ def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_
                 box = readable[0].box
                 for w in readable[1:]:
                     box = union(box, w.box)
-                found.append((box, "text"))
+                found.append((box, "text", " ".join(w.text for w in readable)) if with_text else (box, "text"))
             continue
         text, spans, pos = "", [], 0
         for w in ws:
@@ -528,7 +536,7 @@ def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_
                 box = hit[0].box
                 for w in hit[1:]:
                     box = union(box, w.box)
-                found.append((box, why))
+                found.append((box, why, m.group()) if with_text else (box, why))
     return found
 
 
@@ -653,7 +661,7 @@ def changed_share(a: bytes | None, b: bytes | None) -> float:
 
 
 def refine(times: list[float], thumbs: list[bytes | None], take_thumbs, *, every: float, step: float,
-           budget: int) -> tuple[list[float], list[bytes | None]]:
+           budget: int, log=lambda msg: None) -> tuple[list[float], list[bytes | None]]:
     """Add samples where the picture moved between two neighbours (a scroll, a page
     switch) until neighbours are one frame (`step`) apart or alike, at most `budget`
     extra samples. Why: a word seen at 1 s and again at 2 s after a scroll is in two
@@ -664,9 +672,12 @@ def refine(times: list[float], thumbs: list[bytes | None], take_thumbs, *, every
         mids = [(times[i] + times[i + 1]) / 2 for i in range(len(times) - 1)
                 if step * 1.5 < times[i + 1] - times[i] <= every + 0.01
                 and changed_share(thumbs[i], thumbs[i + 1]) >= MOTION_SHARE]
-        mids = mids[:budget - added]
         if not mids:
             break
+        if len(mids) > budget - added:
+            log(f"redact: the screen moved more than the sampling budget covers; "
+                f"{len(mids) - (budget - added)} gap(s) stay at {every:g} s or coarser (raise --every density)")
+            mids = mids[:budget - added]
         merged = sorted(zip(times + mids, thumbs + take_thumbs(mids)), key=lambda p: p[0])
         times, thumbs = [t for t, _ in merged], [th for _, th in merged]
         added += len(mids)
@@ -686,16 +697,27 @@ def stretches(times: list[float], thumbs: list[bytes | None], every: float) -> l
     return runs
 
 
-def readings(run: tuple[int, int], times: list[float]) -> list[int]:
-    """Which samples of a run to OCR: the first, then one every REREAD_SECONDS, and the
-    last. OCR misses a word in one frame and reads it in the next, so a still screen is
-    read more than once and what any reading found is blurred for the whole run."""
+def readings(run: tuple[int, int], times: list[float], thumbs: list[bytes | None] | None = None) -> list[int]:
+    """Which samples of a run to OCR: the first; any whose picture differs at all from
+    the last one read (a toast, a typed address: small changes a run still contains);
+    one every REREAD_SECONDS; and the last. OCR misses a word in one frame and reads it
+    in the next, so a still screen is read more than once and what any reading found is
+    blurred for the whole run."""
     first, last = run
     picked = [first]
     for k in range(first + 1, last + 1):
-        if times[k] - times[picked[-1]] >= REREAD_SECONDS or (k == last and times[k] - times[picked[-1]] >= 1.0):
+        changed = thumbs is not None and max_diff(thumbs[picked[-1]], thumbs[k]) >= SAME_FRAME_DIFF
+        if (changed or times[k] - times[picked[-1]] >= REREAD_SECONDS
+                or (k == last and times[k] - times[picked[-1]] >= 1.0)):
             picked.append(k)
     return picked
+
+
+def max_diff(a: bytes | None, b: bytes | None) -> int:
+    """Largest per-pixel change between two thumbnails (255 when unknown)."""
+    if not a or not b or len(a) != len(b):
+        return 255
+    return max(abs(x - y) for x, y in zip(a, b))
 
 
 def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoInfo, every: float = EVERY_SECONDS,
@@ -771,9 +793,9 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
                 base = len(times)
                 thumbs = list(pool.map(thumb_at, times))
                 times, thumbs = refine(times, thumbs, lambda ts: list(pool.map(thumb_at, ts)), every=every,
-                                       step=1.0 / info.fps, budget=MAX_REFINE * base)
+                                       step=1.0 / info.fps, budget=MAX_REFINE * base, log=log)
                 runs = stretches(times, thumbs, every)
-                todo = sorted({k for run in runs for k in readings(run, times)})
+                todo = sorted({k for run in runs for k in readings(run, times, thumbs)})
                 log(f"redact: {base} samples (every {every:g} s) + {len(times) - base} where the screen moved; "
                     f"{len(runs)} distinct screens, {len(todo)} read with {engine} "
                     f"for {'all text' if all_text else 'private details'}")
@@ -789,7 +811,7 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
     for first, last in runs:
         start = times[first - 1] if near(first - 1, first) else times[first] - every
         end = times[last + 1] if near(last, last + 1) else times[last] + every
-        for k in readings((first, last), times):
+        for k in readings((first, last), times, thumbs):
             for box, why in hits.get(k, []):
                 clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 4)
                 if clamped:
@@ -808,7 +830,8 @@ def _clip_to_spans(r: Redaction, spans: list[tuple[float, float]], every: float)
 # ----------------------------------------------------------------- checking the result
 
 def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: float = 0.5, ocr: str = "auto",
-               min_length: int = 3, log=lambda msg: None) -> tuple[int, list[tuple[float, str, str]]]:
+               min_length: int = 3, spans: list[tuple[float, float]] | None = None, boxes: list | None = None,
+               log=lambda msg: None) -> tuple[int, list[tuple[float, str, str]]]:
     """OCR a rendered video and list every private detail still readable: (seconds,
     kind, text), first sighting of each text. Returns (frames read, hits).
 
@@ -822,10 +845,12 @@ def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: f
     info = video_info(video)
     duration = info.duration or 0.0
     last = max(0.0, duration - 1.0 / info.fps)  # a seek to the very end returns no frame
-    times = [round(k * every, 3) for k in range(int(last / every) + 1)] if duration else [0.0]
+    if spans:
+        times = [t for t in sample_times(spans, every) if t <= last]
+    else:
+        times = [round(k * every, 3) for k in range(int(last / every) + 1)] if duration else [0.0]
     tiles = tile_rects(info.width, info.height) if engine == "vision" else []
     tesseract = shutil.which("tesseract") if engine == "tesseract" else None
-    patterns = [(k, p) for k, p in SENSITIVE.items()] + [("term", p) for p in terms]
     seen: dict[tuple[str, str], tuple[float, str, str]] = {}
     with tempfile.TemporaryDirectory(prefix="clipbot-leaks-") as tmp:
         tmpdir = Path(tmp)
@@ -845,20 +870,19 @@ def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: f
                 for n, (png, rect) in enumerate(zip(pngs, tiles)):
                     words += vision_words(png, rect, tile=n)
             else:
-                out = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
-                                     text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"}).stdout
-                words = parse_tsv(out, OCR_SCALE)
+                proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
+                                      text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
+                if proc.returncode:  # fail closed: an unread frame is not a clean frame
+                    raise RuntimeError(f"check: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
+                words = parse_tsv(proc.stdout, OCR_SCALE)
             for p in [*pngs, thumb]:
                 p.unlink(missing_ok=True)
-            lines: dict[tuple[int, int, int], list[str]] = {}
-            for w in words:
-                lines.setdefault(w.line, []).append(w.text)
             hits = []
-            for text in (" ".join(ws) for ws in lines.values()):
-                for why, pat in patterns:
-                    for m in pat.finditer(text):
-                        if len(m.group().strip()) >= min_length and not (why == "card" and not luhn(m.group())):
-                            hits.append((t, why, m.group().strip()))
+            for box, why, text in sensitive_hits(words, terms=terms):
+                if len(text.strip()) >= min_length:
+                    hits.append((t, why, text.strip()))
+                    if boxes is not None:
+                        boxes.append((t, box, why))
             return hits
 
         log(f"check: reading {len(times)} frames of {video} (every {every:g} s) with {engine}")
@@ -909,4 +933,36 @@ def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir
         return None, []
     copy = redacted_path(source, out_dir)
     apply(source, redactions, copy, log=log)
+    if mode == "auto":
+        redactions = check_and_patch(source, copy, redactions, spans, info=info, terms=terms, ocr=ocr, log=log)
+        write_redactions(listing, redactions)
     return copy, redactions
+
+
+def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, info: VideoInfo, terms, ocr: str,
+                    rounds: int = CHECK_ROUNDS, log=lambda msg: None) -> list[Redaction]:
+    """Read the redacted copy back (every CHECK_EVERY s inside the spans) and blur
+    whatever is still readable, then check again, at most `rounds` times.
+
+    Why: on Talk #3 OCR missed a client's name in the busy frames of a scroll and read
+    it in the blurred copy, where the rest of the screen was quieter. Detection alone is
+    a net with holes; reading the result and patching the holes closes most of them.
+    Still readable after the last round is an error, not a shipped reel."""
+    for k in range(rounds + 1):
+        found: list = []
+        frames, hits = leak_check(copy, terms=terms, every=CHECK_EVERY, ocr=ocr, spans=spans, boxes=found, log=log)
+        if not hits:
+            log(f"redact: read back {frames} frames of the copy: nothing private readable")
+            return redactions
+        if k == rounds:
+            raise RuntimeError(f"redact: {len(hits)} private detail(s) still readable in {copy} after {rounds} "
+                               "extra round(s); add them to --redact-terms or a redactions file and run again")
+        log(f"redact: read back {frames} frames of the copy; {len(hits)} detail(s) still readable, blurring them")
+        extra = []
+        for t, box, why in found:
+            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 2)
+            if clamped:
+                extra.append(Redaction(max(0.0, t - CHECK_EVERY), t + CHECK_EVERY, clamped, f"{why} (read back)"))
+        redactions = merge(redactions + extra)
+        apply(source, redactions, copy, log=log)
+    return redactions

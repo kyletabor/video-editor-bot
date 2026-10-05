@@ -565,3 +565,50 @@ def test_check_redaction_finds_what_is_readable_and_passes_once_it_is_blurred(tm
     assert {r.why for r in rs} >= {"phone", "email", "term"}
     assert cli.main(["check-redaction", "--video", str(copy), "--terms", str(terms), "--every", "1"]) == 0
     assert "nothing private readable" in capsys.readouterr().out
+
+
+def test_readings_reread_a_sample_whose_picture_changed_at_all():
+    a, b = bytes(100), bytes([0] * 99 + [40])  # one pixel changed: a toast, a typed address
+    times = [0.0, 1.0, 2.0]
+    assert rd.readings((0, 2), times, [a, a, b]) == [0, 2]
+    assert rd.readings((0, 2), times, [a, b, b]) == [0, 1, 2]
+
+
+def test_leak_check_fails_closed_when_tesseract_fails(monkeypatch):
+    monkeypatch.setattr(rd, "resolve_ocr", lambda ocr: "tesseract")
+    monkeypatch.setattr(rd.shutil, "which", lambda name: "/bin/tesseract")
+    monkeypatch.setattr(rd, "video_info", lambda v: rd.VideoInfo(64, 48, 25.0, 1.0))
+
+    def fake_run(args, **kw):
+        if args[0] == "ffmpeg":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 1, "", "tesseract crashed")
+
+    monkeypatch.setattr(rd.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="tesseract failed"):
+        rd.leak_check("x.mp4", every=0.5)
+
+
+def test_check_and_patch_blurs_what_reads_back_and_stops_when_clean(monkeypatch, tmp_path):
+    rounds = []
+
+    def fake_check(copy, *, boxes, **kw):
+        rounds.append(1)
+        if len(rounds) == 1:
+            boxes.append((3.0, (100, 100, 60, 12), "term"))
+            return 10, [(3.0, "term", "Robin")]
+        return 10, []
+
+    applied = []
+    monkeypatch.setattr(rd, "leak_check", fake_check)
+    monkeypatch.setattr(rd, "apply", lambda src, rs, out, log=None: applied.append(list(rs)))
+    rs = rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [Redaction(0, 1, (0, 0, 20, 20), "email")], [(0, 10)],
+                            info=rd.VideoInfo(640, 360, 25.0), terms=[], ocr="vision")
+    assert len(rounds) == 2 and len(applied) == 1
+    assert any(r.why == "term (read back)" and r.start == 2.5 and r.end == 3.5 for r in rs)
+
+    rounds.clear()
+    monkeypatch.setattr(rd, "leak_check", lambda copy, *, boxes, **kw: (10, [(1.0, "phone", "816-555-0144")]))
+    with pytest.raises(RuntimeError, match="still readable"):
+        rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [], [(0, 10)], info=rd.VideoInfo(640, 360, 25.0),
+                           terms=[], ocr="vision", rounds=1)
