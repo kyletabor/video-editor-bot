@@ -1,4 +1,4 @@
-"""Validate, render, verify and publish a v1/v1.1 edit plan without modifying its inputs."""
+"""Validate, render, verify and publish a v1 to v1.4 edit plan without modifying its inputs."""
 
 import json
 import math
@@ -15,7 +15,10 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from .captions import Cue, format_srt, parse_srt, retime, tidy_for_burn
+from .cards import Card, check_pictures
+from .framing import caption_style, pip_framing
 from .media import RenderError, Tools, geometry, inspect_media, warn
+from .overlays import format_ass, kept_frames, overlay_runs
 from .reel import (
     MAX_RECOMMENDED_SECONDS,
     planned_seconds,
@@ -254,7 +257,7 @@ def parts(selected, times, origin, limit=None):
     return result
 
 
-def video_graph(part, origin, video_filter, base=0, captions=None):
+def video_graph(part, origin, video_filter, base=0, captions=None, caption_style=None, labels=None):
     """One part's video: a frame-index trim, output-timeline timestamps, then geometry.
 
     `base` re-bases the frame indices when the input was seeked (see `decode_window`). The
@@ -272,6 +275,11 @@ def video_graph(part, origin, video_filter, base=0, captions=None):
     with a frame time can flip between shown and hidden if the absolute timestamps differ at
     all; with the clip's one SRT and the clip's own timestamps in every part, nothing differs.
     Captions, when given, are that SRT's file name, burned after the geometry filters as before.
+
+    v1.4: `caption_style` is a libass `force_style` (margins that keep captions off a pip
+    speaker tile, see `framing.caption_style`) and `labels` the file name of the clip's overlay
+    script (`overlays.format_ass`), burned last so a label sits above captions. Both are absent
+    for a plan without layout or overlays, whose graph is then byte for byte the v1.3 one.
     """
     first, stop, start, _, offset = part
     graph = (
@@ -280,6 +288,10 @@ def video_graph(part, origin, video_filter, base=0, captions=None):
     )
     if captions:
         graph += f",subtitles=filename={captions}"
+        if caption_style:
+            graph += f":force_style='{caption_style}'"
+    if labels:
+        graph += f",subtitles=filename={labels}"
     return graph + "[video]"
 
 
@@ -445,7 +457,7 @@ def render_audio(session, workspace, selected):
     return wav, samples
 
 
-def render_clip(session, job, clip, selection, video_filter, burn_cues):
+def render_clip(session, job, clip, selection, video_filter, burn_cues, framing=None):
     """Render one clip in parts and join them; return (staged file, audio sample count).
 
     Each part (see `parts`) is decoded from an input seek just before it, trimmed by frame
@@ -456,6 +468,10 @@ def render_clip(session, job, clip, selection, video_filter, burn_cues):
     as a single-pass render was: every frame timestamp, the audio start and length, and a
     full decode. The part workspace is removed after the join, so disk use is bounded by
     one clip's parts.
+
+    `framing` (v1.4) holds what a clip's `layout` and `overlays` add: the output size and, for
+    a pip clip, the `Pip` whose bottom tile burned captions must avoid. Overlays are written as
+    one ASS script on the clip's timeline, whatever the caption mode.
     """
     selected, _, total, tail = selection
     workspace = job / "_parts"
@@ -471,6 +487,17 @@ def render_clip(session, job, clip, selection, video_filter, burn_cues):
         # One SRT on the clip's timeline, burned by every part against the same timestamps.
         captions = "_captions.srt"
         (workspace / captions).write_text(format_srt(burn_cues), encoding="utf-8")
+    labels, style = None, None
+    if framing is not None:
+        dimensions, pip = framing
+        style = caption_style(pip, dimensions[0])
+        runs = overlay_runs(
+            clip.get("overlays", []), kept_frames(selected, session.times, session.origin)
+        )
+        if runs:
+            labels = "_overlays.ass"
+            avoid = pip.corner if pip is not None and pip.tile is not None else None
+            (workspace / labels).write_text(format_ass(runs, dimensions, avoid), encoding="utf-8")
     names, offsets = [], []
     for index, part in enumerate(parts(selected, session.times, session.origin)):
         _, stop, _, _, offset = part
@@ -480,7 +507,8 @@ def render_clip(session, job, clip, selection, video_filter, burn_cues):
         )
         script = workspace / f"part-{index:03d}.txt"
         script.write_text(
-            video_graph(part, session.origin, video_filter, base, captions), encoding="utf-8"
+            video_graph(part, session.origin, video_filter, base, captions, style, labels),
+            encoding="utf-8",
         )
         part_tail = frame_tail(session.times, session.durations, stop - 1)
         session.tools.encode(
@@ -669,12 +697,20 @@ def render_plan(
     if module:
         require_file(module, "transition module")
         draw = load_transition(module)
+    # v1.4 card images are opened now, for the same reason: a missing screenshot must fail the
+    # run before the first encode, naming the file.
+    reel_items = (
+        timeline(plan, reel, lambda value: resolve(root, value)) if reel is not None else []
+    )
+    reel_cards = [item for item in reel_items if isinstance(item, Card)]
+    check_pictures(reel_cards)
     summary_dest = output / summary.name if summary else None
     if summary and summary != summary_dest:
         destinations.append(summary_dest)
     elif summary_dest and summary_dest in destinations:
         raise RenderError("Summary path collides with a clip output")
     protected = {source, plan_path, caption_source, summary, music, module}
+    protected |= {card.image for card in reel_cards if card.image is not None}
     if len(set(destinations)) != len(destinations):
         raise RenderError("Output filenames collide with one another")
     for dest in destinations:
@@ -702,12 +738,25 @@ def render_plan(
     times, durations = tools.frames(source, video["time_base"])
     last_duration = durations[-1] or (float(times[-1] - times[-2]) if len(times) > 1 else 1 / 24)
     video_end = times[-1] + number(last_duration) - origin
-    planned = []
+    planned, framings = [], {}
     for clip in plan["clips"]:
         selection = selections(clip, times, durations, origin, video_end)
         graph, dimensions = geometry(
             video, aspect, clip.get("crop_focus", "center"), spec.get("max_height", 1080)
         )
+        pip = None
+        if clip.get("layout", {}).get("kind") == "pip":
+            if aspect == "16:9":
+                pip = pip_framing(video, clip["layout"], spec.get("max_height", 1080), clip["id"])
+                graph = pip.filter
+            else:
+                warn(
+                    f"clip {clip['id']}: layout pip is only used for 16:9 output; "
+                    f"rendering the full {aspect} frame"
+                )
+        if pip is not None or clip.get("overlays"):
+            # Only v1.4 clips get a framing; every other clip renders exactly as before.
+            framings[clip["id"]] = (dimensions, pip)
         planned.append((clip, selection, graph, dimensions))
         low, high = BOUNDS[preset]
         if not low <= selection[2] <= high:
@@ -718,7 +767,6 @@ def render_plan(
             warn(
                 f"clip {clip['id']}: speaker tracking is unavailable; using the contract's center fallback"
             )
-    reel_items = timeline(plan, reel) if reel is not None else []
     if reel is not None:
         planned_length = planned_seconds(reel_items, plan)
         if planned_length > MAX_RECOMMENDED_SECONDS:
@@ -775,7 +823,7 @@ def render_plan(
                 clip_cues = retime(cues, clip["segments"]) if caption_mode != "none" else []
                 burn_cues = tidy_for_burn(clip_cues) if caption_mode == "burn_in" else []
                 rendered, samples = render_clip(
-                    session, job, clip, selection, video_filter, burn_cues
+                    session, job, clip, selection, video_filter, burn_cues, framings.get(clip_id)
                 )
                 actual_duration = verify(
                     tools,

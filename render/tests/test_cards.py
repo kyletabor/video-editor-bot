@@ -1,6 +1,7 @@
 """Card drawing and reel timeline rules that need no media tools."""
 
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -22,6 +23,8 @@ from cliprender.cards import (
     write_card_png,
 )
 from cliprender.reel import planned_seconds, reel_fps, timeline
+
+ROOT = Path(__file__).resolve().parents[2]
 
 # The contract's three aspects at their common short edge. The layout is proportional to the
 # frame, so each stands for every resolution of its aspect.
@@ -168,6 +171,45 @@ def test_four_long_lines_stay_whole_and_clear_of_the_footer(size):
     assert TITLE_SIZE * plan.title_scale > LINE_SIZE * plan.line_scale
     assert plan.top >= plan.margin * 0.5
     assert plan.bottom <= plan.limit < plan.footer_y
+
+
+# v1.4: a card's picture takes the right 45 % of a 16:9 frame or the lower part of a 9:16 or
+# 1:1 one, so the same extremes must still fit the narrower or shorter text area.
+EXAMPLE_IMAGE = ROOT / "contract/examples/images/example-page.png"
+PICTURES = [
+    pytest.param({"image": EXAMPLE_IMAGE}, id="image"),
+    pytest.param({"qr": "https://github.com/kyletabor/video-editor-bot/" + "x" * 250}, id="qr"),
+]
+
+
+@pytest.mark.parametrize("picture", PICTURES)
+@pytest.mark.parametrize("size", FRAMES)
+def test_contract_extremes_beside_a_picture_stay_whole(size, picture):
+    card = Card(LONG_WORD_TITLE, LONG_LINES, Fraction(3), chapter_footer(9, 10, 3947.23), **picture)
+    plan = layout(card, size)
+    assert words(plan.title_rows) == LONG_WORD_TITLE.split()
+    for line, rows in zip(LONG_LINES, plan.line_rows):
+        assert words(rows) == line.split()
+        assert 1 <= len(rows) <= MAX_ROWS_PER_LINE
+        assert all(plan.line_font.getlength(row) <= plan.column for row in rows)
+    assert all(plan.title_font.getlength(row) <= plan.column for row in plan.title_rows)
+    assert "..." not in " ".join(plan.title_rows) + " ".join(plan.body_rows)
+    assert TITLE_SIZE * plan.title_scale > LINE_SIZE * plan.line_scale
+    assert plan.bottom <= plan.limit < plan.footer_y
+    left, top, right, bottom = plan.picture
+    width, height = size
+    assert 0 <= left < right <= width and 0 <= top < bottom < plan.footer_y
+    if width > height:  # beside: the text column ends left of the picture
+        assert plan.margin + plan.column < left and right - left > width * 0.3
+    else:  # below: the picture starts under the text and keeps a usable share of the frame
+        assert top >= plan.bottom and bottom - top > height * 0.25
+    # The drawn text stays left of (or above) the picture box.
+    image = draw_card(card, size)
+    bright = image.convert("L").point(lambda value: 255 if value > 170 else 0)
+    area = (0, 0, left, height) if width > height else (0, 0, width, top)
+    text_box = bright.crop(area).getbbox()
+    assert text_box is not None
+    assert text_box[2] <= plan.margin + plan.column + 3
 
 
 def test_a_tall_card_shrinks_its_lines_before_its_title():
