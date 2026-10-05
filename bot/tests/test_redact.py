@@ -64,14 +64,6 @@ def test_merge_joins_the_same_box_across_touching_ranges_only():
     assert both == [Redaction(0, 4, (0, 0, 100, 20), "key, token")]
 
 
-def test_blur_radius_respects_boxblur_limits():
-    assert rd.blur_radius((0, 0, 1440, 620)) == (rd.MAX_RADIUS, rd.MAX_RADIUS // 2)
-    lr, cr = rd.blur_radius((0, 0, 200, 16))
-    assert lr <= 16 // 2 and cr <= 16 // 4 and lr >= 1 and cr >= 1
-
-
-# ----------------------------------------------------------------- redactions.json
-
 def test_load_redactions_reads_clock_times_and_clamps(tmp_path):
     p = tmp_path / "r.json"
     p.write_text(json.dumps([
@@ -105,18 +97,38 @@ def test_write_then_load_round_trips(tmp_path):
 
 # ----------------------------------------------------------------- ffmpeg arguments
 
-def test_filter_graph_blurs_each_box_only_in_its_range():
-    g = rd.filter_graph([Redaction(1.5, 2.5, (0, 230, 1440, 620)), Redaction(5.5, 7, (100, 100, 40, 20))])
-    assert g.startswith("[0:v]split=3[base][c0][c1];")
-    assert "[c0]crop=1440:620:0:230,boxblur=luma_radius=40:luma_power=3:chroma_radius=20:chroma_power=3[b0]" in g
-    assert "[base][b0]overlay=0:230:enable='between(t,1.500,2.500)'[v0]" in g
-    assert "[v0][b1]overlay=100:100:enable='between(t,5.500,7.000)'[vout]" in g
-    assert rd.filter_graph([]) == "[0:v]null[vout]"
+def test_mask_timeline_widens_by_a_frame_and_merges_equal_neighbours():
+    a, b = (0, 230, 1440, 620), (100, 100, 40, 20)
+    tl = rd.mask_timeline([Redaction(1.5, 2.5, a), Redaction(2.0, 7, b), Redaction(7.0, 9, b)], 10, 0.04)
+    assert tl == [(0.0, 1.46, ()), (1.46, 1.96, (a,)), (1.96, 2.54, tuple(sorted({a, b}))),
+                  (2.54, 9.04, (b,)), (9.04, 10.0, ())]
+    assert rd.mask_timeline([], 4, 0.04) == [(0.0, 4.0, ())]
+
+
+def test_mask_track_writes_one_png_per_distinct_mask_and_a_concat_list(tmp_path):
+    info = rd.VideoInfo(64, 48, 25.0, 10.0)
+    listing = rd.write_mask_track([Redaction(1, 2, (8, 8, 16, 16)), Redaction(5, 6, (8, 8, 16, 16))], info, tmp_path)
+    text = listing.read_text().splitlines()
+    assert text[0] == "ffconcat version 1.0"
+    files = [ln for ln in text if ln.startswith("file")]
+    assert len(set(files)) == 2 and len(list(tmp_path.glob("mask*.png"))) == 2  # black and the one box, reused
+    durations = [float(ln.split()[1]) for ln in text if ln.startswith("duration")]
+    assert sum(durations) == pytest.approx(10 + 2)  # the source plus the padding past its end
+    png = (tmp_path / "mask0000.png").read_bytes()
+    assert png.startswith(b"\x89PNG") and b"IHDR" in png
+
+
+def test_filter_graph_is_one_blur_and_one_blend_whatever_the_box_count():
+    g = rd.filter_graph(rd.VideoInfo(1920, 1080, 24.0))
+    assert g.count("boxblur") == 1 and g.count("alphamerge") == 1 and "fps=24.000000" in g
+    assert "luma_radius=20" in g and g.endswith("[vout]")
+    assert "luma_radius=7" in rd.filter_graph(rd.VideoInfo(32, 16, 25.0))  # small frames: boxblur's limit
 
 
 def test_apply_args_copy_audio_and_captions_and_tag_the_file():
-    args = rd.apply_args("in file.mp4", [Redaction(0, 1, (0, 0, 20, 20))], "out.mp4", tag="abc")
+    args = rd.apply_args("in file.mp4", Path("m/masks.ffconcat"), rd.VideoInfo(640, 360, 25.0), "out.mp4", tag="abc")
     assert args[0] == "ffmpeg" and "in file.mp4" in args and args[-1] == "out.mp4"
+    assert args[args.index("concat") - 1] == "-f" and str(Path("m/masks.ffconcat")) in args
     assert args[args.index("-c:a") + 1] == "copy" and args[args.index("-c:s") + 1] == "mov_text"
     assert ["-map", "0:a?"] == args[args.index("0:a?") - 1: args.index("0:a?") + 1]
     assert ["-map", "0:s?"] == args[args.index("0:s?") - 1: args.index("0:s?") + 1]
@@ -139,6 +151,9 @@ TSV = (
     "5\t1\t1\t1\t1\t2\t360\t700\t400\t40\t91.0\tpat@example.com\n"
     "5\t1\t1\t1\t1\t3\t780\t700\t30\t40\t-1\t \n"
 )
+TSV_HEADER = TSV.splitlines(keepends=True)[0]
+TSV_ROW = "5\t1\t1\t1\t1\t1\t200\t300\t140\t40\t95\t{text}\n"
+THUMB_SIZE = rd.THUMB[0] * rd.THUMB[1]
 
 
 def test_parse_tsv_keeps_words_and_undoes_the_upscale():
@@ -207,6 +222,55 @@ def test_all_text_mode_boxes_each_readable_line():
         + line_words("noise", y=500, line=(2, 1, 1), conf=12)
     hits = rd.find_sensitive(words, all_text=True)
     assert hits == [(rd.union(words[0].box, words[1].box), "text")]  # one-letter and low-confidence lines skipped
+
+
+def test_refine_adds_samples_only_where_the_screen_moved():
+    still, moved = bytes(100), bytes([200] * 100)
+    picture = lambda t: moved if t >= 2.3 else still  # the screen scrolls at 2.3 s
+    times, thumbs = rd.refine([0.0, 1.0, 2.0, 3.0, 4.0], [picture(t) for t in (0, 1, 2, 3, 4)],
+                              lambda ts: [picture(t) for t in ts], every=1.0, step=0.04, budget=50)
+    extra = [t for t in times if t not in (0, 1, 2, 3, 4)]
+    assert extra and all(2.0 < t < 3.0 for t in extra)  # only between the samples either side of the change
+    edge = [b - a for a, b in zip(times, times[1:]) if picture(a) != picture(b)]
+    assert edge == [pytest.approx(1 / 32)]  # halved down to under 1.5 frames
+    capped, _ = rd.refine([0.0, 1.0], [still, moved], lambda ts: [moved for _ in ts], every=1.0, step=0.001, budget=3)
+    assert len(capped) == 5  # the budget holds
+
+
+def test_stretches_and_readings():
+    a, b = bytes(100), bytes([200] * 100)
+    times = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0]
+    thumbs = [a, a, a, a, b, b, b, b]
+    runs = rd.stretches(times, thumbs, every=1.0)
+    assert runs == [(0, 3), (4, 6), (7, 7)]  # a new screen at 4 s; 10 s is a new span
+    assert rd.readings((0, 3), times) == [0, 3] and rd.readings((7, 7), times) == [7]
+    long = [float(t) for t in range(10)]
+    assert rd.readings((0, 9), long) == [0, 3, 6, 9]
+
+
+def test_detect_blurs_a_whole_still_run_with_what_any_reading_found(monkeypatch, tmp_path):
+    """OCR reads the name at 2 s only; the blur still covers the run, 0-1 s before to after it."""
+    monkeypatch.setattr(rd, "resolve_ocr", lambda ocr: "tesseract")
+    monkeypatch.setattr(rd.shutil, "which", lambda name: "/bin/tesseract")
+    still = bytes(THUMB_SIZE)
+
+    def fake_run(args, **kw):
+        if "-f" in args and args[args.index("-f") + 1] == "rawvideo" and "-filter_complex" not in args:
+            Path(args[-1]).write_bytes(still)  # thumb_args
+        elif args[0] == "ffmpeg":
+            for a in args:
+                if a.endswith(".png"):
+                    Path(a).write_bytes(b"x")
+        else:  # tesseract: the name is read at 3 s only
+            k = int(Path(args[1]).name[1:6])  # the sample's index: 0, 1, 2, 3 s and 3.95 s
+            tsv = TSV_HEADER + (TSV_ROW.format(text="Robin") if k == 3 else "")
+            return subprocess.CompletedProcess(args, 0, tsv, "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(rd.subprocess, "run", fake_run)
+    rs = rd.detect("x.mp4", [(0.0, 4.0)], info=rd.VideoInfo(640, 360, 25.0), every=1.0,
+                   terms=rd.compile_terms(["Robin"]))
+    assert [r.why for r in rs] == ["term"] and rs[0].start == 0.0 and rs[0].end >= 4.0
 
 
 def test_detect_fails_closed_without_tesseract(monkeypatch):
@@ -330,7 +394,7 @@ def _make_source(tmp_path: Path) -> Path:
         "ffmpeg", "-nostdin", "-v", "error", "-y",
         "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=4", "-f", "lavfi", "-i", "sine=f=440:d=4", "-i", str(srt),
         "-map", "0:v", "-map", "1:a", "-map", "2:s", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-        "-c:s", "mov_text", "-shortest", str(src),
+        "-c:s", "mov_text", "-t", "4", str(src),  # -t, not -shortest: ffmpeg 9 never ends with an srt input
     ], check=True)
     return src
 
@@ -479,3 +543,106 @@ def test_cli_reel_redact_reads_only_the_kept_segments_and_names_the_copy(tmp_pat
     assert seen["mode"] == "auto" and seen["out_dir"] == tmp_path
     kept = sorted((s["start"], s["end"]) for c in plan["clips"] for s in c["segments"])
     assert sorted((round(a, 3), round(b, 3)) for a, b in seen["spans"]) == kept  # OCR only what the reel shows
+
+
+@pytest.mark.skipif(not _vision_ready(), reason="needs ffmpeg, macOS and the vision extra")
+def test_check_redaction_finds_what_is_readable_and_passes_once_it_is_blurred(tmp_path, capsys):
+    """End to end: a screen with a phone, an e-mail and a name; the check lists them,
+    `run` blurs them, and the check on the copy comes back clean."""
+    png, src = tmp_path / "screen.png", tmp_path / "screen.mp4"
+    _draw_screen(png, [("Call 816-555-0144 about the invoice", 300, 300),
+                       ("Draft is in your pat@example.com folder", 900, 600),
+                       ("Weekly notes for Robin", 300, 800)], size=11.0)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-loop", "1", "-i", str(png), "-t", "3", "-r", "25",
+                    "-vf", "scale=1920:1080", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    terms = tmp_path / "names.txt"
+    terms.write_text("Robin\n")
+    assert cli.main(["check-redaction", "--video", str(src), "--terms", str(terms), "--every", "1"]) == 1
+    cap = capsys.readouterr()
+    listed = cap.out
+    assert "816-555-0144" in listed, cap.err and "pat@example.com" in listed and "Robin" in listed
+    copy, rs = rd.run(src, "auto", [(0, 3)], tmp_path / "out", terms_file=str(terms), every=1.0, ocr="vision")
+    assert {r.why for r in rs} >= {"phone", "email", "term"}
+    assert cli.main(["check-redaction", "--video", str(copy), "--terms", str(terms), "--every", "1"]) == 0
+    assert "nothing private readable" in capsys.readouterr().out
+
+
+def test_readings_reread_a_sample_whose_picture_changed_at_all():
+    a, b = bytes(100), bytes([0] * 99 + [40])  # one pixel changed: a toast, a typed address
+    times = [0.0, 1.0, 2.0]
+    assert rd.readings((0, 2), times, [a, a, b]) == [0, 2]
+    assert rd.readings((0, 2), times, [a, b, b]) == [0, 1, 2]
+
+
+def test_leak_check_fails_closed_when_tesseract_fails(monkeypatch):
+    monkeypatch.setattr(rd, "resolve_ocr", lambda ocr: "tesseract")
+    monkeypatch.setattr(rd.shutil, "which", lambda name: "/bin/tesseract")
+    monkeypatch.setattr(rd, "video_info", lambda v: rd.VideoInfo(64, 48, 25.0, 1.0))
+
+    def fake_run(args, **kw):
+        if args[0] == "ffmpeg":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 1, "", "tesseract crashed")
+
+    monkeypatch.setattr(rd.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="tesseract failed"):
+        rd.leak_check("x.mp4", every=0.5)
+
+
+def test_check_and_patch_blurs_what_reads_back_and_stops_when_clean(monkeypatch, tmp_path):
+    rounds = []
+
+    def fake_check(copy, *, boxes, every, spans, **kw):
+        if every < 0.1:  # the frame-by-frame look around a hit: the word one frame earlier, elsewhere
+            assert spans == [(2.0, 4.0)]
+            boxes.append((2.48, (100, 90, 60, 12), "term"))
+            return 50, [(2.48, "term", "Robin")]
+        rounds.append(1)
+        if len(rounds) == 1:
+            boxes.append((3.0, (100, 100, 60, 12), "term"))
+            return 10, [(3.0, "term", "Robin")]
+        return 10, []
+
+    applied = []
+    monkeypatch.setattr(rd, "leak_check", fake_check)
+    monkeypatch.setattr(rd, "apply", lambda src, rs, out, log=None: applied.append(list(rs)))
+    rs = rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [Redaction(0, 1, (0, 0, 20, 20), "email")], [(0, 10)],
+                            info=rd.VideoInfo(640, 360, 25.0), terms=[], ocr="vision")
+    assert len(rounds) == 2 and len(applied) == 1
+    assert any(r.start <= 2.0 and r.end >= 4.0 and r.box[1] < 100 for r in rs)  # the hit, widened to t ± 1 s
+    assert any(r.start <= 2.48 <= r.end and r.box[1] < 90 for r in rs)  # the frame-by-frame sighting, where it was
+
+    rounds.clear()
+    monkeypatch.setattr(rd, "leak_check", lambda copy, *, boxes, **kw: (10, [(1.0, "phone", "816-555-0144")]))
+    (tmp_path / "c.mp4").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="still readable"):
+        rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [], [(0, 10)], info=rd.VideoInfo(640, 360, 25.0),
+                           terms=[], ocr="vision", rounds=1)
+    assert not (tmp_path / "c.mp4").exists() and (tmp_path / "c.unsafe.mp4").exists()
+
+
+def test_vision_frame_recycles_workers_and_retries_a_failed_frame_once(monkeypatch):
+    made = []
+
+    class FakeWorker:
+        def __init__(self):
+            made.append(self)
+            self.done = 0
+            self.proc = type("P", (), {"poll": lambda self: None})()
+
+        def read(self, pngs, tiles):
+            if len(made) == 1 and self.done == 2:
+                raise RuntimeError("redact: Apple Vision failed on a frame: imageOperationFailed")
+            self.done += 1
+            return [Word("x", (0, 0, 1, 1), 90.0, (0, 0, 0))]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(rd, "_VisionWorker", FakeWorker)
+    monkeypatch.setattr(rd, "VISION_TASKS_PER_PROCESS", 3)
+    monkeypatch.setattr(rd._workers, "vision", None, raising=False)
+    for _ in range(6):
+        assert rd.vision_frame([Path("a.png")], [(0, 0, 10, 10)])
+    # worker 1 failed on its 3rd frame -> a fresh worker read it; that one is replaced after 3 frames
+    assert len(made) == 3 and [w.done for w in made] == [2, 3, 1]

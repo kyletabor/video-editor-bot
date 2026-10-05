@@ -142,7 +142,7 @@ def fps_text(fps):
     return f"{fps.numerator}/{fps.denominator}"
 
 
-def timeline(plan, reel):
+def timeline(plan, reel, resolve=None):
     """Cards and clip ids in playback order, honoring `chapter_cards`.
 
     `auto` shows a card only where the plan author wrote one, `all` synthesizes a card from
@@ -151,24 +151,35 @@ def timeline(plan, reel):
     first segment starts in the source, so a viewer can find the moment in the recording.
     Opening and closing cards (v1.2) carry no footer: they are not chapters, so a "k of N"
     counter would miscount the reel.
+
+    v1.4 `clips[].cards` play in order right before the clip, ahead of its `card`. They show
+    under every `chapter_cards` mode, `none` included: they are explicit section and link
+    slides the author placed, not chapter markers the renderer may synthesize or drop. The
+    chapter footer goes on the last card before the clip (its `card`, else the last of its
+    `cards`), so a run of slides is counted once; under `none` no card carries a footer.
+    `resolve` turns card image paths into absolute ones (see `Card.from_plan`).
     """
     mode = reel.get("chapter_cards", "auto")
     clips = plan["clips"]
     items = []
     if "intro" in reel:
-        items.append(Card.from_plan(reel["intro"]))
-    items.extend(Card.from_plan(card) for card in reel.get("opening", []))
+        items.append(Card.from_plan(reel["intro"], resolve=resolve))
+    items.extend(Card.from_plan(card, resolve=resolve) for card in reel.get("opening", []))
     for index, clip in enumerate(clips, 1):
         card = clip.get("card")
         if card is None and mode == "all":
             card = {"title": clip["takeaway"]}
+        before = list(clip.get("cards", []))
         if card is not None and mode != "none":
-            footer = chapter_footer(index, len(clips), clip["segments"][0]["start"])
-            items.append(Card.from_plan(card, footer))
+            before.append(card)
+        footer = chapter_footer(index, len(clips), clip["segments"][0]["start"])
+        for position, spec in enumerate(before, 1):
+            last = position == len(before) and mode != "none"
+            items.append(Card.from_plan(spec, footer if last else "", resolve))
         items.append(clip["id"])
-    items.extend(Card.from_plan(card) for card in reel.get("closing", []))
+    items.extend(Card.from_plan(card, resolve=resolve) for card in reel.get("closing", []))
     if "outro" in reel:
-        items.append(Card.from_plan(reel["outro"]))
+        items.append(Card.from_plan(reel["outro"], resolve=resolve))
     return items
 
 

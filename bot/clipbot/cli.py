@@ -218,7 +218,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
         specs = json.loads(Path(a.moments).read_text(encoding="utf-8"))
         if not isinstance(specs, list) or not specs:
             raise ValueError(f"{a.moments}: expected a non-empty JSON list of moments")
-        moments = reelmod.moments_from_specs(specs, cues, snapper=snapper)
+        moments = reelmod.moments_from_specs(specs, cues, snapper=snapper, base=Path(a.moments).resolve().parent)
         how = f"--moments {a.moments}"
     elif a.llm:
         if not llm.has_credentials():
@@ -509,6 +509,21 @@ def add_caption_args(p: argparse.ArgumentParser, speakers: bool = True) -> None:
                        help="subtract this from the notes' clock (seconds or h:mm:ss) when it started before the video")
 
 
+def cmd_check_redaction(a: argparse.Namespace) -> int:
+    """OCR a rendered reel or clip and list private details still readable (redact.leak_check)."""
+    terms = redactmod.compile_terms(Path(a.terms).read_text(encoding="utf-8").splitlines()) if a.terms else []
+    frames, hits = redactmod.leak_check(a.video, terms=terms, every=a.every, ocr=a.ocr, min_length=a.min_length,
+                                        log=lambda msg: print(msg, file=sys.stderr))
+    for t, why, text in hits:
+        print(f"{_hms(t)}\t{why}\t{text}")
+    if hits:
+        print(f"check: {len(hits)} private detail(s) still readable in {a.video}; add boxes or terms and redact "
+              "again (false alarms: raise --min-length or tighten the term)", file=sys.stderr)
+        return 1
+    print(f"check: nothing private readable in {frames} frames of {a.video} (a person still watches it before sharing)")
+    return 0
+
+
 OCR_HELP = ("OCR for auto/text: vision (Apple Vision: macOS and the vision extra; reads small shared-screen "
             "text), tesseract (on PATH), or auto (default): vision when it loads, else tesseract")
 
@@ -611,6 +626,15 @@ def main(argv: list[str] | None = None) -> int:
     prd.add_argument("--out-dir", default=None,
                      help="where redactions.json and <source>.redacted.mp4 go (default: the plan's folder, else the source's)")
     prd.set_defaults(fn=cmd_redact)
+
+    pck = sub.add_parser("check-redaction", help="OCR a rendered video and list private details still readable")
+    pck.add_argument("--video", required=True, help="the rendered reel or clip")
+    pck.add_argument("--terms", default=None, help="the same names file as --redact-terms / --terms")
+    pck.add_argument("--every", type=float, default=0.5, help="seconds between the frames read (default 0.5)")
+    pck.add_argument("--ocr", default="auto", choices=redactmod.OCR_ENGINES, help=OCR_HELP)
+    pck.add_argument("--min-length", type=int, default=3,
+                     help="ignore hits shorter than this many characters: OCR noise (default 3)")
+    pck.set_defaults(fn=cmd_check_redaction)
 
     pst = sub.add_parser("styles", help="list the style packs (assets/styles/)")
     pst.set_defaults(fn=cmd_styles)

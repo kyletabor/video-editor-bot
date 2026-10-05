@@ -57,6 +57,14 @@ BAD_PLANS = {
     "module that is not a .py file": minimal(
         output={"dir": "o", "reel": {"transition": {"kind": "module", "module": "t/wipe.txt"}}}),
     "closing with 4 cards": minimal(output={"dir": "o", "reel": {"closing": [{"title": "a"}] * 4}}),
+    # v1.4 image / QR cards, card lists, overlays, picture-in-picture
+    "card with image and qr": minimal(output={"dir": "o", "reel": {"intro": {"title": "t", "image": "a.png", "qr": "https://x.dev"}}}),
+    "qr that is not a URL": minimal(output={"dir": "o", "reel": {"intro": {"title": "t", "qr": "github.com/x/y"}}}),
+    "clip with 5 cards": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "cards": [{"title": "a"}] * 5}]),
+    "pip without screen": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "layout": {"kind": "pip", "speaker": [0, 0, 10, 10]}}]),
+    "pip box with 3 numbers": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "layout": {"kind": "pip", "screen": [0, 0, 10]}}]),
+    "overlay without text": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "overlays": [{"start": 0, "end": 1}]}]),
+    "overlay position middle": minimal(clips=[{"id": "c1", "takeaway": "t", "segments": [{"start": 0, "end": 1}], "overlays": [{"start": 0, "end": 1, "text": "x", "position": "middle"}]}]),
 }
 
 

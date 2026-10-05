@@ -222,6 +222,42 @@ interpolated time + word overlap (`clipbot/speakers.py`); pass
 `--speakers-offset 0:22:00` when the notes' clock started before the video.
 It is best effort and never fails the run.
 
+## Telling the reel as a story (`clipbot/story.py`, contract v1.4)
+
+A reel of good moments with one title card each did not teach Talk #3 to someone who
+missed it. Kyle's review (2026-10-05) asked for a story: a slide that opens each part,
+a "what this covers" slide, the presenter's own overview, then each step with a slide
+on why it matters; a link or QR code whenever a repo comes up; labels that say what the
+shared screen shows; and the shared screen large with the speaker small in a corner.
+The author writes these into the moments and framing files; the bot checks them
+against the contract and puts them in the plan.
+
+Per moment in `--moments` (all optional):
+
+```json
+{"start": "8:24", "end": "9:16", "title": "Clip bot recap",
+ "cards": [{"title": "Part 1: the clip bot", "lines": ["What to remember"]},
+           {"title": "Get the clip bot", "lines": ["Open source"], "qr": "https://github.com/kyletabor/video-editor-bot"}],
+ "image": "shots/artifact.png",
+ "overlays": [{"start": "8:30", "end": "8:41", "text": "The bot's repo is public"}],
+ "layout": "full"}
+```
+
+- `cards`: up to 4 slides before the moment's own chapter card, e.g. a part opener
+  and a QR card. Each takes `image` or `qr` like the chapter card.
+- `image` / `qr`: a screenshot or a QR code on the moment's chapter card. Image paths
+  are relative to the moments file and written to the plan as absolute paths.
+- `overlays`: labels in source time; any that fall on cut-away seconds are dropped.
+- `layout`: `"full"` keeps the plain frame, `"pip"` uses the framing default, or an
+  object with its own `screen` and `speaker` regions.
+
+In `--framing`, `"layout": {"kind": "pip", "screen": [x, y, w, h], "speaker": [x, y, w, h]}`
+is every moment's default. In a Google Meet recording of a screen share, the share and
+the active-speaker tile sit in fixed places: find them on one frame grab
+(`ffmpeg -ss 20:00 -i talk.mp4 -frames:v 1 frame.png`). Talk #3 was
+`screen [0, 240, 1440, 600]` and `speaker [1440, 270, 480, 270]`. Moments where the
+call is in gallery view (nobody sharing) take `"layout": "full"`.
+
 ## Blurring private details on screen (`clipbot/redact.py`)
 
 A shared screen can show an inbox, a calendar, a client list or a key clearly
@@ -247,6 +283,28 @@ uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact boxes.j
   "box": [x, y, w, h], "why": "screen share"}]`, times in seconds or h:mm:ss,
   the box in source pixels (find them on a frame grab:
   `ffmpeg -ss 12:40 -i talk.mp4 -frames:v 1 frame.png`).
+
+Where two neighbouring samples differ a lot (a scroll, a page switch) the bot takes
+more samples in between, down to one frame apart, so a moving word is boxed where it is
+at each moment; on Talk #3 a client's name was readable for a second mid-scroll before
+this. Samples showing the same screen form a run, which is read a few times (every 3 s
+and at its end) and everything any reading found is blurred for the whole run: OCR
+misses a word in one frame and reads it in the next.
+
+The blur is one blurred copy of each frame shown through a mask track (one still per
+interval, stitched with the concat demuxer), so 5 boxes and 5,000 cost the same: Talk
+#3's 471 boxes went from more than an hour to about 12 minutes for a 67-minute recording.
+
+Check the result before anyone sees it:
+
+```bash
+uv run --project bot --extra vision clipbot check-redaction --video out/talk/reel.mp4 --terms names.txt
+```
+
+reads the rendered video every 0.5 s and lists any e-mail address, phone number, key or
+term still readable (exit 1), or says nothing private was readable (exit 0). Hits under
+three characters are OCR noise ("ct" inside "Oct"); `--min-length` changes that. A clean
+check is evidence, not proof: the presenter still watches the reel before it is shared.
 
 The blur is written to a **redacted copy of the source**,
 `<out dir>/<source>.redacted.mp4`: same length and timestamps, audio copied

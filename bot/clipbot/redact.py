@@ -37,11 +37,13 @@ Vision reads each frame as overlapping tiles (`VISION_TILE`, `VISION_STEP`),
 each upscaled `VISION_SCALE` times: whole-frame Vision downsamples the image and
 loses the small text too.
 
-A word seen at sample t was not seen at t - every, so each detection is blurred
-from the sample before it to the sample after it (`every` on each side) and
-consecutive detections of the same box are merged into one range. A frame that
-did not change since the previous sample (a static slide, a paused screen) is
-not read again: its detections carry over.
+Where two neighbouring samples differ a lot (a scroll, a page switch), more are taken
+in between, down to one frame apart, so a moving word is boxed where it actually is.
+Samples that show the same screen form a run; a run is OCR'd a few times (OCR misses
+a word in one frame and reads it in the next) and everything found is blurred for the
+whole run, from the sample before it to the sample after it. The blur itself is one
+blurred copy of each frame shown through a mask track (`write_mask_track`), so its cost
+does not grow with the number of boxes.
 
 Privacy fails closed: missing tesseract or an ffmpeg error stops the run, it
 never falls back to an unredacted reel. OCR misses things (tiny or low-contrast
@@ -60,9 +62,12 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -80,12 +85,21 @@ TEXT_MODE_CONFIDENCE = 40  # `text` mode skips the noise OCR reports on faces an
 PAD_PIXELS = 6  # around every OCR box: glyph tops, descenders and anti-aliasing
 MIN_BOX = 16  # boxblur needs room for its radius; nothing smaller hides a glyph
 THUMB = (192, 108)  # grey thumbnail compared between samples
-SAME_FRAME_DIFF = 8  # largest per-pixel |Δ| on it for two samples to count as the same picture
-MAX_RADIUS = 40
+MOTION_DELTA = 12  # a thumbnail pixel that changed by more than this counts as changed
+MOTION_SHARE = 0.02  # this share changed between two samples: the screen moved, look in between
+SAME_FRAME_DIFF = 8  # a sample whose thumbnail differs by this much anywhere is read again
+CHECK_EVERY = 0.5  # seconds between the frames of the redacted copy that `run` reads back
+CHECK_SCALE = 4  # the check reads tiles larger than detection (3x): a reel enlarges the screen, and Talk #3's
+# reel showed a client's name that 3x reads of the blurred copy had missed
+CHECK_ROUNDS = 2  # detect -> blur -> read the copy -> blur what is still readable, at most this often
+STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
+REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
+MAX_REFINE = 3  # extra samples where the screen moved, at most this many per regular sample
 WORKERS = 4
+BLUR_RADIUS = 20  # luma box radius, 3 passes: a 7-60 px word comes out as a smudge
 ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
 TAG = "clipbot-redact"
-VERSION = 2  # bump when the copy a given source + boxes produce changes (cached copies are then rewritten)
+VERSION = 3  # bump when the copy a given source + boxes produce changes (cached copies are then rewritten)
 
 # One regex per kind, run over each OCR line (words joined by single spaces).
 SENSITIVE: dict[str, re.Pattern[str]] = {
@@ -221,33 +235,84 @@ def write_redactions(path: str | Path, redactions: list[Redaction]) -> None:
 
 # ----------------------------------------------------------------- applying: ffmpeg
 
-def blur_radius(box: tuple[int, int, int, int]) -> tuple[int, int]:
-    """(luma, chroma) boxblur radii: as strong as the box allows. boxblur
-    refuses a radius above half the plane's smaller side, and the chroma planes
-    of yuv420p are half size."""
-    side = min(box[2], box[3])
-    return max(1, min(MAX_RADIUS, side // 2 - 1)), max(1, min(MAX_RADIUS // 2, side // 4 - 1))
+def mask_timeline(redactions: list[Redaction], duration: float, frame: float) -> list[tuple[float, float, tuple]]:
+    """[0, duration] cut into intervals, each with the boxes blurred during it
+    (empty tuple = nothing). Every range is widened by one frame on both sides: the
+    mask track is a still per interval resampled to the source's frame rate, and a
+    frame that lands on an interval edge must never fall on the unblurred side."""
+    edges = {0.0, float(duration)}
+    spans = []
+    for r in redactions:
+        a, b = max(0.0, r.start - frame), min(float(duration), r.end + frame)
+        if b > a:
+            spans.append((a, b, r.box))
+            edges.update((a, b))
+    cuts = sorted(edges)
+    out: list[tuple[float, float, tuple]] = []
+    for a, b in zip(cuts, cuts[1:]):
+        boxes = tuple(sorted({box for s, e, box in spans if s < b and e > a}))
+        if out and out[-1][2] == boxes:
+            out[-1] = (out[-1][0], b, boxes)
+        else:
+            out.append((a, b, boxes))
+    return out
 
 
-def filter_graph(redactions: list[Redaction]) -> str:
-    """One crop + boxblur + overlay per redaction, enabled only in its range.
-    Without -copyts ffmpeg shifts the input so its first frame is t = 0, the same
-    clock `-ss` and the renderer use, so the ranges go in as written (a .ts
-    source starting at 1.46 s was blurred 1.46 s late when they were shifted)."""
-    if not redactions:
-        return "[0:v]null[vout]"
-    n = len(redactions)
-    parts = [f"[0:v]split={n + 1}[base]" + "".join(f"[c{k}]" for k in range(n))]
-    prev = "base"
-    for k, r in enumerate(redactions):
-        x, y, w, h = r.box
-        lr, cr = blur_radius(r.box)
-        a, b = r.start, r.end
-        out = "vout" if k == n - 1 else f"v{k}"
-        parts.append(f"[c{k}]crop={w}:{h}:{x}:{y},boxblur=luma_radius={lr}:luma_power=3:chroma_radius={cr}:chroma_power=3[b{k}]")
-        parts.append(f"[{prev}][b{k}]overlay={x}:{y}:enable='between(t,{a:.3f},{b:.3f})'[{out}]")
-        prev = out
-    return ";".join(parts)
+def _png_gray(width: int, height: int, boxes) -> bytes:
+    """An 8-bit greyscale PNG: white inside the boxes, black elsewhere (no Pillow needed)."""
+    row_black = bytes(width)
+    rows = []
+    for y in range(height):
+        row = bytearray(row_black)
+        for x, by, w, h in boxes:
+            if by <= y < by + h:
+                row[x:x + w] = b"\xff" * len(row[x:x + w])
+        rows.append(b"\x00" + bytes(row))
+    raw = zlib.compress(b"".join(rows), 6)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
+
+
+def write_mask_track(redactions: list[Redaction], info: "VideoInfo", folder: Path) -> Path:
+    """One mask PNG per distinct set of boxes and an ffconcat list that shows each
+    for its interval: the mask track `apply` blends through. Returns the list."""
+    duration = info.duration or max((r.end for r in redactions), default=1.0) + 1.0
+    frame = 1.0 / info.fps
+    pngs: dict[tuple, Path] = {}
+    lines = ["ffconcat version 1.0"]
+    timeline = mask_timeline(redactions, duration, frame) + [(duration, duration + 2.0, ())]  # padding past the end
+    for a, b, boxes in timeline:
+        if boxes not in pngs:
+            png = folder / f"mask{len(pngs):04d}.png"
+            png.write_bytes(_png_gray(info.width, info.height, boxes))
+            pngs[boxes] = png
+        lines += [f"file '{pngs[boxes].name}'", f"duration {b - a:.6f}"]
+    lines.append(f"file '{pngs[timeline[-1][2]].name}'")  # the concat demuxer drops the last duration otherwise
+    listing = folder / "masks.ffconcat"
+    listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return listing
+
+
+def filter_graph(info: "VideoInfo") -> str:
+    """Every frame blurred once, then shown only where the mask track is white.
+
+    Why a mask track instead of one crop + blur + overlay per box: Talk #3 needed 471
+    boxes, and that graph split every frame 472 ways; the hour-long copy had not
+    finished after an hour. One blur and one alpha blend per frame cost the same for
+    5 boxes or 5,000 and wrote the same copy in about 12 minutes. Without -copyts
+    ffmpeg shifts the source so its first frame is t = 0, and the mask track also
+    starts at 0, so the ranges go in as written (a .ts source starting at 1.46 s was
+    once blurred 1.46 s late when they were shifted)."""
+    luma = max(1, min(BLUR_RADIUS, min(info.width, info.height) // 2 - 1))  # boxblur's limit is half a side
+    chroma = max(1, min(BLUR_RADIUS // 2, min(info.width, info.height) // 4 - 1))  # yuv420p chroma is half size
+    blur = f"boxblur=luma_radius={luma}:luma_power=3:chroma_radius={chroma}:chroma_power=3"
+    return (f"[0:v]split=2[base][soft];[soft]{blur}[blur];"
+            f"[1:v]fps={info.fps:.6f},format=gray,scale={info.width}:{info.height}[mask];"
+            "[blur][mask]alphamerge[masked];[base][masked]overlay=0:0:eof_action=pass:shortest=1:format=auto,format=yuv420p[vout]")
 
 
 def fingerprint(source: str | Path, redactions: list[Redaction]) -> str:
@@ -271,14 +336,15 @@ def _stored_fingerprint(path: Path) -> str | None:
     return comment[len(TAG) + 1:] if comment.startswith(TAG + ":") else None
 
 
-def apply_args(source: str | Path, redactions: list[Redaction], out: str | Path, *, tag: str = "") -> list[str]:
+def apply_args(source: str | Path, masks: Path, info: "VideoInfo", out: str | Path, *, tag: str = "") -> list[str]:
     """ffmpeg argv for the redacted copy: video re-encoded through the blur
-    graph, audio copied as is, text captions converted to mov_text (the one
-    caption codec mp4 holds: an MKV's subrip cannot be copied in) so the renderer
-    still reads them from the copy, container metadata kept."""
+    graph and the mask track (`write_mask_track`), audio copied as is, text captions
+    converted to mov_text (the one caption codec mp4 holds: an MKV's subrip cannot be
+    copied in) so the renderer still reads them from the copy, container metadata kept."""
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-i", str(source),
-        "-filter_complex", filter_graph(redactions),
+        "-f", "concat", "-safe", "0", "-i", str(masks),
+        "-filter_complex", filter_graph(info),
         "-map", "[vout]", "-map", "0:a?", "-map", "0:s?",
         *ENCODE, "-c:a", "copy", "-c:s", "mov_text",
         "-map_metadata", "0", "-metadata", f"comment={TAG}:{tag}", "-movflags", "+faststart",
@@ -296,10 +362,12 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, l
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".partial" + out.suffix)
     log(f"redact: writing {out} ({len(redactions)} blurred region(s)); the whole video is re-encoded, "
-        "about a quarter of its length on a laptop")
+        "about a fifth of its length")
+    info = video_info(source)
     try:
-        proc = subprocess.run(apply_args(source, redactions, tmp, tag=tag),
-                              capture_output=True, text=True)
+        with tempfile.TemporaryDirectory(prefix="clipbot-masks-") as folder:
+            masks = write_mask_track(redactions, info, Path(folder))
+            proc = subprocess.run(apply_args(source, masks, info, tmp, tag=tag), capture_output=True, text=True)
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH") from e
     if proc.returncode:
@@ -317,13 +385,16 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, l
 class VideoInfo:
     width: int
     height: int
+    fps: float = 25.0
+    duration: float | None = None
 
 
 def video_info(source: str | Path) -> VideoInfo:
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-             "-of", "json", str(source)], check=True, capture_output=True, text=True,
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height,avg_frame_rate,r_frame_rate:format=duration", "-of", "json", str(source)],
+            check=True, capture_output=True, text=True,
         ).stdout
     except FileNotFoundError as e:
         raise RuntimeError("ffprobe not found on PATH") from e
@@ -333,7 +404,21 @@ def video_info(source: str | Path) -> VideoInfo:
     streams = data.get("streams") or []
     if not streams:
         raise RuntimeError(f"{source}: no video stream to redact")
-    return VideoInfo(int(streams[0]["width"]), int(streams[0]["height"]))
+    st = streams[0]
+    fps = 25.0
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        num, _, den = str(st.get(key) or "0/0").partition("/")
+        try:
+            if float(num) > 0 and float(den or 1) > 0:
+                fps = float(num) / float(den or 1)
+                break
+        except ValueError:
+            continue
+    try:
+        duration = float(data.get("format", {}).get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    return VideoInfo(int(st["width"]), int(st["height"]), fps, duration)
 
 
 # ----------------------------------------------------------------- detection: sample + OCR
@@ -411,8 +496,13 @@ def compile_terms(lines: list[str]) -> list[re.Pattern[str]]:
     return out
 
 
-def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_text: bool = False
-                   ) -> list[tuple[tuple[int, int, int, int], str]]:
+def sensitive_hits(words: list[Word], *, terms: list[re.Pattern[str]] = ()) -> list[tuple[tuple[int, int, int, int], str, str]]:
+    """(box, kind, matched text) for every private detail in `words` (see find_sensitive)."""
+    return find_sensitive(words, terms=terms, with_text=True)
+
+
+def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_text: bool = False,
+                   with_text: bool = False) -> list[tuple]:
     """(box, why) for every match. Patterns run over whole OCR lines so a phone
     number or a name split into several words is caught; the box is the union
     of the words the match touches."""
@@ -428,7 +518,7 @@ def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_
                 box = readable[0].box
                 for w in readable[1:]:
                     box = union(box, w.box)
-                found.append((box, "text"))
+                found.append((box, "text", " ".join(w.text for w in readable)) if with_text else (box, "text"))
             continue
         text, spans, pos = "", [], 0
         for w in ws:
@@ -449,7 +539,7 @@ def find_sensitive(words: list[Word], *, terms: list[re.Pattern[str]] = (), all_
                 box = hit[0].box
                 for w in hit[1:]:
                     box = union(box, w.box)
-                found.append((box, why))
+                found.append((box, why, m.group()) if with_text else (box, why))
     return found
 
 
@@ -526,6 +616,62 @@ def split_line(text: str, conf: float, line: tuple[int, int, int], rect: tuple[i
     return words
 
 
+VISION_TASKS_PER_PROCESS = 40  # frames one OCR worker reads before it is replaced
+_workers = threading.local()
+
+
+class _VisionWorker:
+    """One `python -m clipbot.vision_worker` child, fed a frame per line of JSON."""
+
+    def __init__(self) -> None:
+        self.proc = subprocess.Popen([sys.executable, "-m", "clipbot.vision_worker"], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.done = 0
+
+    def read(self, pngs: list[Path], tiles) -> list[Word]:
+        self.proc.stdin.write(json.dumps({"pngs": [str(p) for p in pngs], "tiles": [list(t) for t in tiles]}) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("redact: the Vision OCR worker stopped")
+        reply = json.loads(line)
+        if "error" in reply:
+            raise RuntimeError(f"redact: Apple Vision failed on a frame: {reply['error']}")
+        self.done += 1
+        return [Word(w[0], tuple(w[1]), w[2], tuple(w[3])) for w in reply["words"]]
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - a worker that will not stop is killed
+            self.proc.kill()
+
+
+def vision_frame(pngs: list[Path], tiles: list[tuple[int, int, int, int]]) -> list[Word]:
+    """All tiles of one frame read with Apple Vision in this thread's worker process.
+
+    Why a separate, recycled process: in one long-lived process Vision started failing
+    every request (imageOperationFailed) after about 800 frames of Talk #3, while the
+    same tile read fine in a fresh process. Each worker reads VISION_TASKS_PER_PROCESS
+    frames and is replaced; a frame that fails is read once more by a fresh worker
+    before the run fails closed."""
+    for attempt in (1, 2):
+        worker = getattr(_workers, "vision", None)
+        if worker is None or worker.done >= VISION_TASKS_PER_PROCESS or worker.proc.poll() is not None:
+            if worker is not None:
+                worker.close()
+            worker = _workers.vision = _VisionWorker()
+        try:
+            return worker.read(pngs, tiles)
+        except (RuntimeError, OSError, ValueError):
+            worker.close()
+            _workers.vision = None
+            if attempt == 2:
+                raise
+    return []
+
+
 def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -> list[Word]:
     """Read one upscaled tile with Apple Vision; boxes come back in source pixels."""
     import objc
@@ -538,6 +684,10 @@ def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -
         req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
         req.setUsesLanguageCorrection_(False)  # names, numbers and addresses are not dictionary words
         ok, err = handler.performRequests_error_([req], None)
+        for _ in range(2):  # Vision fails now and then under load (imageOperationFailed); a retry reads the frame
+            if ok:
+                break
+            ok, err = handler.performRequests_error_([req], None)
         if not ok:
             raise RuntimeError(f"redact: Apple Vision failed on a frame: {err}")
         words: list[Word] = []
@@ -558,26 +708,111 @@ def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -
         return words
 
 
-def _thumb_diff(a: bytes | None, b: bytes | None) -> float:
+def thumb_args(source: str | Path, t: float, thumb: Path) -> list[str]:
+    """Only the grey thumbnail at t: cheap enough to take many times over a scroll."""
+    return ["ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", f"{max(t, 0):.3f}", "-i", str(source),
+            "-vf", f"scale={THUMB[0]}:{THUMB[1]}:flags=area,format=gray", "-frames:v", "1", "-f", "rawvideo", str(thumb)]
+
+
+def changed_share(a: bytes | None, b: bytes | None) -> float:
+    """Share of thumbnail pixels that changed by more than MOTION_DELTA (1.0 when unknown).
+    A call's speaker tile moves all the time but is a few percent of the frame; a scroll
+    or a page switch changes much more."""
     if not a or not b or len(a) != len(b):
-        return 255.0
-    return float(max(abs(x - y) for x, y in zip(a, b)))
+        return 1.0
+    return sum(1 for x, y in zip(a, b) if abs(x - y) > MOTION_DELTA) / len(a)
+
+
+def refine(times: list[float], thumbs: list[bytes | None], take_thumbs, *, every: float, step: float,
+           budget: int, log=lambda msg: None) -> tuple[list[float], list[bytes | None]]:
+    """Add samples where the picture moved between two neighbours (a scroll, a page
+    switch) until neighbours are one frame (`step`) apart or alike, at most `budget`
+    extra samples. Why: a word seen at 1 s and again at 2 s after a scroll is in two
+    places; a blur from 0 to 2 s at the first place leaves the second readable (Talk #3:
+    a client's name showed for a second mid-scroll)."""
+    added = 0
+    while added < budget:
+        mids = [(times[i] + times[i + 1]) / 2 for i in range(len(times) - 1)
+                if step * 1.5 < times[i + 1] - times[i] <= every + 0.01
+                and changed_share(thumbs[i], thumbs[i + 1]) >= MOTION_SHARE]
+        if not mids:
+            break
+        if len(mids) > budget - added:
+            log(f"redact: the screen moved more than the sampling budget covers; "
+                f"{len(mids) - (budget - added)} gap(s) stay at {every:g} s or coarser (raise --every density)")
+            mids = mids[:budget - added]
+        merged = sorted(zip(times + mids, thumbs + take_thumbs(mids)), key=lambda p: p[0])
+        times, thumbs = [t for t, _ in merged], [th for _, th in merged]
+        added += len(mids)
+    return times, thumbs
+
+
+def stretches(times: list[float], thumbs: list[bytes | None], every: float) -> list[tuple[int, int]]:
+    """[first, last] sample indices of each run that shows one unchanged screen
+    (compared with the run's first frame, so slow drift ends a run too)."""
+    runs: list[tuple[int, int]] = []
+    for k in range(len(times)):
+        if (runs and times[k] - times[k - 1] <= every + 0.01
+                and changed_share(thumbs[runs[-1][0]], thumbs[k]) < STILL_SHARE):
+            runs[-1] = (runs[-1][0], k)
+        else:
+            runs.append((k, k))
+    return runs
+
+
+def readings(run: tuple[int, int], times: list[float], thumbs: list[bytes | None] | None = None) -> list[int]:
+    """Which samples of a run to OCR: the first; any whose picture differs at all from
+    the last one read (a toast, a typed address: small changes a run still contains);
+    one every REREAD_SECONDS; and the last. OCR misses a word in one frame and reads it
+    in the next, so a still screen is read more than once and what any reading found is
+    blurred for the whole run."""
+    first, last = run
+    picked = [first]
+    for k in range(first + 1, last + 1):
+        changed = thumbs is not None and max_diff(thumbs[picked[-1]], thumbs[k]) >= SAME_FRAME_DIFF
+        if (changed or times[k] - times[picked[-1]] >= REREAD_SECONDS
+                or (k == last and times[k] - times[picked[-1]] >= 1.0)):
+            picked.append(k)
+    return picked
+
+
+def max_diff(a: bytes | None, b: bytes | None) -> int:
+    """Largest per-pixel change between two thumbnails (255 when unknown)."""
+    if not a or not b or len(a) != len(b):
+        return 255
+    return max(abs(x - y) for x, y in zip(a, b))
 
 
 def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoInfo, every: float = EVERY_SECONDS,
            terms: list[re.Pattern[str]] = (), all_text: bool = False, ocr: str = "auto",
            log=lambda msg: None) -> list[Redaction]:
-    """Sample, OCR and box (module docstring). Raises RuntimeError when the OCR engine is missing."""
+    """Sample, OCR and box (module docstring). Raises RuntimeError when the OCR engine is missing.
+
+    1. A grey thumbnail every `every` seconds inside the spans; where neighbours differ
+       a lot (a scroll), more thumbnails in between, down to one frame (`refine`).
+    2. Runs of samples that show the same screen (`stretches`); each run is OCR'd a few
+       times (`readings`) and everything found is blurred for the whole run, from the
+       sample before it to the sample after it. A sample in motion is a run of one, so
+       its blur spans only the frames between its neighbours."""
     engine = resolve_ocr(ocr)
     tesseract = shutil.which("tesseract") if engine == "tesseract" else None
     tiles = tile_rects(info.width, info.height) if engine == "vision" else []
     times = sample_times(spans, every)
     if not times:
         return []
-    log(f"redact: reading {len(times)} frames (every {every:g} s) with {engine} "
-        f"for {'all text' if all_text else 'private details'}")
     with tempfile.TemporaryDirectory(prefix="clipbot-redact-") as tmp:
         tmpdir = Path(tmp)
+        counter = iter(range(10 ** 9))
+
+        def thumb_at(t: float) -> bytes | None:
+            path = tmpdir / f"t{next(counter):06d}.gray"
+            proc = subprocess.run(thumb_args(source, t, path), capture_output=True, text=True)
+            if proc.returncode:
+                raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
+                                   f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
+            data = path.read_bytes() if path.is_file() else None
+            path.unlink(missing_ok=True)
+            return data
 
         def grab(k_t):
             k, t = k_t
@@ -592,16 +827,12 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
             if proc.returncode or not all(p.is_file() for p in pngs):
                 raise RuntimeError(f"redact: could not read the frame at {t:.1f} s: "
                                    f"{(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
-            data = thumb.read_bytes() if thumb.is_file() else None
             thumb.unlink(missing_ok=True)
-            return pngs, data
+            return pngs
 
         def ocr_frame(pngs: list[Path]) -> list[Word]:
             if engine == "vision":
-                words: list[Word] = []
-                for n, (png, rect) in enumerate(zip(pngs, tiles)):
-                    words += vision_words(png, rect, tile=n)
-                return words
+                return vision_frame(pngs, tiles)
             # One thread per tesseract: its OpenMP threads on top of WORKERS processes thrash (40x slower here).
             proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
                                   text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
@@ -609,41 +840,42 @@ def detect(source: str | Path, spans: list[tuple[float, float]], *, info: VideoI
                 raise RuntimeError(f"redact: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
             return parse_tsv(proc.stdout, OCR_SCALE)
 
-        # Chunk by chunk, so a whole-recording scan never holds thousands of 4K PNGs on disk at once.
-        # A frame that is the same picture as the frame last read (compared with that frame, not just
-        # the previous sample, so slow drift adds up and forces a new read) reuses its words.
-        owner: list[int] = []
-        last_read: bytes | None = None  # thumbnail of the frame last sent to OCR
-        read: dict[int, list[Word]] = {}
-        chunk = WORKERS * 16
+        def read_one(k: int) -> list[tuple[tuple[int, int, int, int], str]]:
+            pngs = grab((k, times[k]))
+            try:
+                return find_sensitive(ocr_frame(pngs), terms=terms, all_text=all_text)
+            finally:
+                for png in pngs:
+                    png.unlink(missing_ok=True)
+
         try:
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                for lo in range(0, len(times), chunk):
-                    ks = range(lo, min(lo + chunk, len(times)))
-                    pngs = dict(zip(ks, pool.map(grab, ((k, times[k]) for k in ks))))
-                    todo = []
-                    for k in ks:
-                        thumb = pngs[k][1]
-                        same = (k and times[k] - times[k - 1] <= every + 0.01
-                                and _thumb_diff(thumb, last_read) < SAME_FRAME_DIFF)
-                        owner.append(owner[k - 1] if same else k)
-                        if not same:
-                            todo.append(k)
-                            last_read = thumb
-                    read.update(zip(todo, pool.map(lambda k: ocr_frame(pngs[k][0]), todo)))
-                    for files, _ in pngs.values():
-                        for png in files:
-                            png.unlink(missing_ok=True)
+                base = len(times)
+                thumbs = list(pool.map(thumb_at, times))
+                times, thumbs = refine(times, thumbs, lambda ts: list(pool.map(thumb_at, ts)), every=every,
+                                       step=1.0 / info.fps, budget=MAX_REFINE * base, log=log)
+                runs = stretches(times, thumbs, every)
+                todo = sorted({k for run in runs for k in readings(run, times, thumbs)})
+                log(f"redact: {base} samples (every {every:g} s) + {len(times) - base} where the screen moved; "
+                    f"{len(runs)} distinct screens, {len(todo)} read with {engine} "
+                    f"for {'all text' if all_text else 'private details'}")
+                # one frame at a time through the pool: a whole-recording scan never holds thousands of PNGs
+                hits = dict(zip(todo, pool.map(read_one, todo)))
         except FileNotFoundError as e:
             raise RuntimeError("ffmpeg not found on PATH") from e
-        log(f"redact: OCR on {len(read)} distinct frames ({len(times) - len(read)} unchanged, reused)")
+
+    def near(i: int, j: int) -> bool:
+        return 0 <= i < len(times) and 0 <= j < len(times) and abs(times[j] - times[i]) <= every + 0.01
 
     found: list[Redaction] = []
-    for k, t in enumerate(times):
-        for box, why in find_sensitive(read[owner[k]], terms=terms, all_text=all_text):
-            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 4)
-            if clamped:
-                found.append(Redaction(max(0.0, t - every), t + every, clamped, why))
+    for first, last in runs:
+        start = times[first - 1] if near(first - 1, first) else times[first] - every
+        end = times[last + 1] if near(last, last + 1) else times[last] + every
+        for k in readings((first, last), times, thumbs):
+            for box, why in hits.get(k, []):
+                clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 4)
+                if clamped:
+                    found.append(Redaction(max(0.0, start), end, clamped, why))
     return [_clip_to_spans(r, spans, every) for r in merge(found)]
 
 
@@ -653,6 +885,74 @@ def _clip_to_spans(r: Redaction, spans: list[tuple[float, float]], every: float)
     lo = min((a for a, b in spans if b >= r.start), default=r.start)
     hi = max((b for a, b in spans if a <= r.end), default=r.end)
     return replace(r, start=max(r.start, lo - every, 0.0), end=min(r.end, hi + every))
+
+
+# ----------------------------------------------------------------- checking the result
+
+def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: float = 0.5, ocr: str = "auto",
+               min_length: int = 3, spans: list[tuple[float, float]] | None = None, boxes: list | None = None,
+               log=lambda msg: None) -> tuple[int, list[tuple[float, str, str]]]:
+    """OCR a rendered video and list every private detail still readable: (seconds,
+    kind, text), first sighting of each text. Returns (frames read, hits).
+
+    Why: the blur is only as good as the boxes, and a reel must not be shared on the
+    strength of the boxes alone. The Talk #3 reel was checked this way by hand and the
+    check found a client's name readable for a second during a scroll; this makes that
+    check one command. Hits shorter than `min_length` characters ("ct" read inside
+    "Oct") are OCR noise, not a person's name. A clean result is evidence, not proof:
+    a human still watches the reel before it is shared."""
+    engine = resolve_ocr(ocr)
+    info = video_info(video)
+    duration = info.duration or 0.0
+    last = max(0.0, duration - 1.0 / info.fps)  # a seek to the very end returns no frame
+    if spans:
+        times = [t for t in sample_times(spans, every) if t <= last]
+    else:
+        times = [round(k * every, 3) for k in range(int(last / every) + 1)] if duration else [0.0]
+    tiles = tile_rects(info.width, info.height) if engine == "vision" else []
+    tesseract = shutil.which("tesseract") if engine == "tesseract" else None
+    seen: dict[tuple[str, str], tuple[float, str, str]] = {}
+    with tempfile.TemporaryDirectory(prefix="clipbot-leaks-") as tmp:
+        tmpdir = Path(tmp)
+
+        def read(k_t) -> list[tuple[float, str, str]]:
+            k, t = k_t
+            thumb = tmpdir / f"c{k:06d}.gray"
+            if engine == "vision":
+                pngs = [tmpdir / f"c{k:06d}-{n:03d}.png" for n in range(len(tiles))]
+                args = tile_frame_args(video, t, tiles, pngs, thumb, scale=CHECK_SCALE)
+            else:
+                pngs = [tmpdir / f"c{k:06d}.png"]
+                args = frame_args(video, t, pngs[0], thumb)
+            subprocess.run(args, capture_output=True, text=True, check=True)
+            words: list[Word] = []
+            if engine == "vision":
+                words = vision_frame(pngs, tiles)
+            else:
+                proc = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
+                                      text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
+                if proc.returncode:  # fail closed: an unread frame is not a clean frame
+                    raise RuntimeError(f"check: tesseract failed: {(proc.stderr.strip().splitlines() or ['no output'])[-1]}")
+                words = parse_tsv(proc.stdout, OCR_SCALE)
+            for p in [*pngs, thumb]:
+                p.unlink(missing_ok=True)
+            hits = []
+            for box, why, text in sensitive_hits(words, terms=terms):
+                if len(text.strip()) >= min_length:
+                    hits.append((t, why, text.strip()))
+                    if boxes is not None:
+                        boxes.append((t, box, why))
+            return hits
+
+        log(f"check: reading {len(times)} frames of {video} (every {every:g} s) with {engine}")
+        try:
+            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                for hits in pool.map(read, enumerate(times)):
+                    for t, why, text in hits:
+                        seen.setdefault((why, text.lower()), (t, why, text))
+        except FileNotFoundError as e:
+            raise RuntimeError("ffmpeg not found on PATH") from e
+    return len(times), sorted(seen.values())
 
 
 # ----------------------------------------------------------------- the step clipbot runs
@@ -692,4 +992,64 @@ def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir
         return None, []
     copy = redacted_path(source, out_dir)
     apply(source, redactions, copy, log=log)
+    if mode == "auto":
+        redactions = check_and_patch(source, copy, redactions, spans, info=info, terms=terms, ocr=ocr, log=log)
+        write_redactions(listing, redactions)
     return copy, redactions
+
+
+def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, info: VideoInfo, terms, ocr: str,
+                    rounds: int = CHECK_ROUNDS, log=lambda msg: None) -> list[Redaction]:
+    """Read the redacted copy back (every CHECK_EVERY s inside the spans) and blur
+    whatever is still readable, then check again, at most `rounds` times.
+
+    Why: on Talk #3 OCR missed a client's name in the busy frames of a scroll and read
+    it in the blurred copy, where the rest of the screen was quieter. Detection alone is
+    a net with holes; reading the result and patching the holes closes most of them.
+    Around every hit the copy is read frame by frame (a word in a scroll is in a new
+    place each frame, and the coarse read-back may see it in only one of the frames
+    where it shows), and each frame's hits are blurred on that frame and its
+    neighbours. Still readable after the last round is an error, and the copy is
+    renamed `.unsafe` so nothing renders from it by accident."""
+    frame = 1.0 / info.fps
+    for k in range(rounds + 1):
+        found: list = []
+        frames, hits = leak_check(copy, terms=terms, every=CHECK_EVERY, ocr=ocr, spans=spans, boxes=found, log=log)
+        if not hits:
+            log(f"redact: read back {frames} frames of the copy: nothing private readable")
+            return redactions
+        for t, why, text in hits:  # where, what kind and how long: enough to find it, without printing it
+            log(f"redact:   still readable at {t:.2f} s: {why}, {len(text)} characters")
+        if k == rounds:
+            unsafe = copy.with_name(copy.stem + ".unsafe" + copy.suffix)
+            copy.replace(unsafe)
+            raise RuntimeError(f"redact: {len(hits)} private detail(s) still readable in the copy after {rounds} "
+                               f"extra round(s) (kept as {unsafe.name} for inspection); add them to --redact-terms "
+                               "or a redactions file and run again")
+        around = merge_spans([(max(0.0, t - 2 * CHECK_EVERY), t + 2 * CHECK_EVERY) for t, _, _ in found])
+        dense: list = []
+        leak_check(copy, terms=terms, every=frame, ocr=ocr, spans=around, boxes=dense, log=log)
+        log(f"redact: read back {frames} frames of the copy; {len(hits)} detail(s) still readable, "
+            f"{len(dense)} sighting(s) frame by frame around them; blurring them")
+        extra = []
+        for t, box, why in found:
+            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 2)
+            if clamped:
+                extra.append(Redaction(max(0.0, t - 2 * CHECK_EVERY), t + 2 * CHECK_EVERY, clamped, f"{why} (read back)"))
+        for t, box, why in dense:
+            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 2)
+            if clamped:
+                extra.append(Redaction(max(0.0, t - 2 * frame), t + 2 * frame, clamped, f"{why} (read back)"))
+        redactions = merge(redactions + extra)
+        apply(source, redactions, copy, log=log)
+    return redactions
+
+
+def merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
