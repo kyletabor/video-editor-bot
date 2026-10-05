@@ -66,6 +66,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -613,35 +614,60 @@ def split_line(text: str, conf: float, line: tuple[int, int, int], rect: tuple[i
     return words
 
 
-def _vision_tiles(pngs: list[str], tiles: list[tuple[int, int, int, int]]) -> list[Word]:
-    """Worker-process side of `vision_frame`."""
-    words: list[Word] = []
-    for n, (png, rect) in enumerate(zip(pngs, tiles)):
-        words += vision_words(Path(png), rect, tile=n)
-    return words
+VISION_TASKS_PER_PROCESS = 40  # frames one OCR worker reads before it is replaced
+_workers = threading.local()
 
 
-_VISION_POOL = None
-VISION_TASKS_PER_PROCESS = 40  # frames one OCR process reads before it is replaced
+class _VisionWorker:
+    """One `python -m clipbot.vision_worker` child, fed a frame per line of JSON."""
+
+    def __init__(self) -> None:
+        self.proc = subprocess.Popen([sys.executable, "-m", "clipbot.vision_worker"], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.done = 0
+
+    def read(self, pngs: list[Path], tiles) -> list[Word]:
+        self.proc.stdin.write(json.dumps({"pngs": [str(p) for p in pngs], "tiles": [list(t) for t in tiles]}) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("redact: the Vision OCR worker stopped")
+        reply = json.loads(line)
+        if "error" in reply:
+            raise RuntimeError(f"redact: Apple Vision failed on a frame: {reply['error']}")
+        self.done += 1
+        return [Word(w[0], tuple(w[1]), w[2], tuple(w[3])) for w in reply["words"]]
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - a worker that will not stop is killed
+            self.proc.kill()
 
 
 def vision_frame(pngs: list[Path], tiles: list[tuple[int, int, int, int]]) -> list[Word]:
-    """All tiles of one frame read with Apple Vision in a worker process.
+    """All tiles of one frame read with Apple Vision in this thread's worker process.
 
-    Why processes, recycled: in one long-lived process Vision started failing every
-    request (imageOperationFailed) after about 800 frames of Talk #3, while the same
-    tile read fine in a fresh process. Each worker reads VISION_TASKS_PER_PROCESS
-    frames and is replaced, so a two-hour scan never reaches that state."""
-    global _VISION_POOL
-    if _VISION_POOL is None:
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
-
-        kwargs = {"max_workers": WORKERS, "mp_context": multiprocessing.get_context("spawn")}
-        if sys.version_info >= (3, 11):
-            kwargs["max_tasks_per_child"] = VISION_TASKS_PER_PROCESS
-        _VISION_POOL = ProcessPoolExecutor(**kwargs)
-    return _VISION_POOL.submit(_vision_tiles, [str(p) for p in pngs], list(tiles)).result()
+    Why a separate, recycled process: in one long-lived process Vision started failing
+    every request (imageOperationFailed) after about 800 frames of Talk #3, while the
+    same tile read fine in a fresh process. Each worker reads VISION_TASKS_PER_PROCESS
+    frames and is replaced; a frame that fails is read once more by a fresh worker
+    before the run fails closed."""
+    for attempt in (1, 2):
+        worker = getattr(_workers, "vision", None)
+        if worker is None or worker.done >= VISION_TASKS_PER_PROCESS or worker.proc.poll() is not None:
+            if worker is not None:
+                worker.close()
+            worker = _workers.vision = _VisionWorker()
+        try:
+            return worker.read(pngs, tiles)
+        except (RuntimeError, OSError, ValueError):
+            worker.close()
+            _workers.vision = None
+            if attempt == 2:
+                raise
+    return []
 
 
 def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -> list[Word]:

@@ -619,3 +619,30 @@ def test_check_and_patch_blurs_what_reads_back_and_stops_when_clean(monkeypatch,
         rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [], [(0, 10)], info=rd.VideoInfo(640, 360, 25.0),
                            terms=[], ocr="vision", rounds=1)
     assert not (tmp_path / "c.mp4").exists() and (tmp_path / "c.unsafe.mp4").exists()
+
+
+def test_vision_frame_recycles_workers_and_retries_a_failed_frame_once(monkeypatch):
+    made = []
+
+    class FakeWorker:
+        def __init__(self):
+            made.append(self)
+            self.done = 0
+            self.proc = type("P", (), {"poll": lambda self: None})()
+
+        def read(self, pngs, tiles):
+            if len(made) == 1 and self.done == 2:
+                raise RuntimeError("redact: Apple Vision failed on a frame: imageOperationFailed")
+            self.done += 1
+            return [Word("x", (0, 0, 1, 1), 90.0, (0, 0, 0))]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(rd, "_VisionWorker", FakeWorker)
+    monkeypatch.setattr(rd, "VISION_TASKS_PER_PROCESS", 3)
+    monkeypatch.setattr(rd._workers, "vision", None, raising=False)
+    for _ in range(6):
+        assert rd.vision_frame([Path("a.png")], [(0, 0, 10, 10)])
+    # worker 1 failed on its 3rd frame -> a fresh worker read it; that one is replaced after 3 frames
+    assert len(made) == 3 and [w.done for w in made] == [2, 3, 1]
