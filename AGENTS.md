@@ -21,6 +21,11 @@ command on its own.
 
 ## 1. Your lane
 
+> **2026-10-04: the two-agent lane experiment ended.** Kyle's agent may now edit any folder
+> (`bot/`, `render/`, `contract/`, `assets/`, root files) on its own branch and PR, reviewed under
+> Kyle's dev process (loop step 7). The lane labels below stay as history and for Ramsey's agent
+> if it joins again; when it does, agree on lanes before either agent edits the other's folder.
+
 | Lane label    | Agent                                      | You may edit                         |
 |---------------|--------------------------------------------|--------------------------------------|
 | `lane:bot`    | Kyle's                                     | `bot/`                               |

@@ -1,0 +1,88 @@
+{
+  "version": "1",
+  "source": {
+    "path": "assets/demo-clip.mp4",
+    "duration_seconds": 72,
+    "captions": {
+      "kind": "embedded"
+    }
+  },
+  "output": {
+    "dir": "out/demo-story",
+    "preset": "internal",
+    "aspect": "16:9",
+    "captions": "burn_in",
+    "reel": {
+      "filename": "reel.mp4",
+      "intro": {
+        "title": "Demo clip: a reel told as a story",
+        "lines": [
+          "Recorded 2026-09-25"
+        ],
+        "seconds": 4
+      },
+      "chapter_cards": "auto"
+    }
+  },
+  "clips": [
+    {
+      "id": "clip-01-can-we-use-this-for-our-video-bot",
+      "takeaway": "Can we use this recording for our video bot?",
+      "segments": [
+        {
+          "start": 16.0,
+          "end": 28.0
+        }
+      ],
+      "cards": [
+        {
+          "title": "Part 1: the clip bot",
+          "lines": [
+            "What it does, and what to remember if you want to try it"
+          ],
+          "seconds": 3
+        },
+        {
+          "title": "Get the clip bot",
+          "lines": [
+            "Open source: point it at a recorded call"
+          ],
+          "qr": "https://github.com/kyletabor/video-editor-bot",
+          "seconds": 5
+        }
+      ],
+      "layout": {
+        "kind": "pip",
+        "screen": [0, 0, 1440, 810],
+        "speaker": [1440, 270, 480, 270],
+        "corner": "bottom-right"
+      },
+      "overlays": [
+        {
+          "start": 17.0,
+          "end": 22.0,
+          "text": "The recording the bot will cut",
+          "position": "top"
+        }
+      ]
+    },
+    {
+      "id": "clip-02-questioning-the-clip-bot-idea",
+      "takeaway": "I'm really questioning whether Ramsey's idea for a video clip bot is going to work.",
+      "segments": [
+        {
+          "start": 36.0,
+          "end": 52.0
+        }
+      ],
+      "card": {
+        "title": "What a page looks like",
+        "lines": [
+          "A screenshot shown beside the text"
+        ],
+        "image": "contract/examples/images/example-page.png",
+        "seconds": 4
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kyletabor/video-editor-bot/contract/edit-plan.schema.json",
   "title": "Edit plan",
-  "description": "The interface between bot/ (produces) and render/ (consumes). A plan is one source file, one output spec, and an ordered list of clips. Each clip is a keep-list of time segments from the source, concatenated in order. v1.1 adds an optional reel; v1.2 adds music, transitions, opening and closing cards; v1.3 adds transitions drawn by a Python module: the renderer also concatenates every clip, with optional slide cards, into one summary video. Nothing else is implied: no effects, no transitions, no re-encoding choices beyond what output.* states.",
+  "description": "The interface between bot/ (produces) and render/ (consumes). A plan is one source file, one output spec, and an ordered list of clips. Each clip is a keep-list of time segments from the source, concatenated in order. v1.1 adds an optional reel; v1.2 adds music, transitions, opening and closing cards; v1.3 adds transitions drawn by a Python module; v1.4 adds image and QR-code cards, several cards before a clip, text overlays on a clip and a picture-in-picture layout for shared screens: the renderer also concatenates every clip, with optional slide cards, into one summary video. Nothing else is implied: no effects, no transitions, no re-encoding choices beyond what output.* states.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -334,7 +334,7 @@
       "required": [
         "title"
       ],
-      "description": "v1.1. A full-frame slide: dark background, a title, up to four lines of text, shown for `seconds` with silent audio. The renderer draws it; no image files are exchanged.",
+      "description": "v1.1. A full-frame slide: dark background, a title, up to four lines of text, shown for `seconds` with silent audio. The renderer draws it. v1.4: a card may also show one picture beside the text: `image` (a PNG or JPEG file, e.g. a screenshot) or `qr` (a URL the renderer draws as a QR code with the URL under it), never both.",
       "properties": {
         "title": {
           "type": "string",
@@ -356,7 +356,25 @@
           "minimum": 1,
           "maximum": 10,
           "default": 3
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "v1.4. Repo-root-relative or absolute path to a PNG or JPEG shown beside the text (16:9: text left, picture right; 9:16 and 1:1: picture below the text), scaled to fit and never cropped."
+        },
+        "qr": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 300,
+          "pattern": "^https?://",
+          "description": "v1.4. A URL the renderer draws as a scannable QR code, with the URL printed under it so it can also be typed. Placed like `image`."
         }
+      },
+      "not": {
+        "required": [
+          "image",
+          "qr"
+        ]
       }
     },
     "clip": {
@@ -413,6 +431,113 @@
         "card": {
           "$ref": "#/$defs/card",
           "description": "v1.1. Optional explainer slide shown immediately before this clip in the reel (only used when output.reel is present)."
+        },
+        "cards": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/card"
+          },
+          "description": "v1.4. Slides shown in order immediately before this clip in the reel (before `card` when both are set): a section opener, a 'what this covers' slide, a QR card for a link mentioned in the clip. Only used when output.reel is present."
+        },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "description": "v1.4. How the source picture is framed. full (default) = the source frame as is. pip = picture-in-picture for a recorded screen share: the `screen` region fills the frame as large as it fits, and the `speaker` region (the call's active-speaker tile) is shown small in `corner`, beside the screen when the frame has room and over it otherwise. Only used for 16:9 output; other aspects ignore it with a warning.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "full",
+                "pip"
+              ]
+            },
+            "screen": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "description": "pip: the shared-screen region, [x, y, w, h] in source pixels."
+            },
+            "speaker": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "description": "pip: the speaker tile region, [x, y, w, h] in source pixels. Optional: without it the screen alone fills the frame."
+            },
+            "corner": {
+              "type": "string",
+              "enum": [
+                "bottom-right",
+                "bottom-left",
+                "top-right",
+                "top-left"
+              ],
+              "default": "bottom-right"
+            }
+          },
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pip"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "screen"
+            ]
+          }
+        },
+        "overlays": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start",
+              "end",
+              "text"
+            ],
+            "properties": {
+              "start": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Source seconds."
+              },
+              "end": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Source seconds, after start."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "position": {
+                "type": "string",
+                "enum": [
+                  "top",
+                  "bottom"
+                ],
+                "default": "top"
+              }
+            }
+          },
+          "description": "v1.4. Short text shown over the clip while the source time is in [start, end) and that time is kept by a segment: a label that says what the screen shows. Times are source seconds, like segments, so trimming never moves a label onto the wrong picture. Burned like captions; `top` keeps it clear of them."
         }
       }
     }

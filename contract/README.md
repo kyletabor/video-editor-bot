@@ -5,7 +5,7 @@ The only interface between `bot/` (Kyle's lane, produces a plan) and `render/`
 by the other side.
 
 - [`edit-plan.schema.json`](edit-plan.schema.json) — JSON Schema 2020-12, the
-  source of truth. Currently **v1.3**: v1 plus an optional reel, music, transitions (built in or drawn by a Python module) and opening/closing cards (see below).
+  source of truth. Currently **v1.4**: v1 plus an optional reel, music, transitions (built in or drawn by a Python module), opening/closing cards, and (v1.4) image and QR cards, card lists before a clip, overlays and a picture-in-picture layout (see below).
 - [`examples/one-clip-trim.json`](examples/one-clip-trim.json) — minimum viable
   plan: one clip, one segment, embedded captions, 16:9.
 - [`examples/two-clips-concat-vertical.json`](examples/two-clips-concat-vertical.json)
@@ -98,6 +98,34 @@ slide, with sparse explainer slides between sections.
 - A module is code the renderer runs with the operator's rights. Name only files you
   would run yourself; the bot must never take a module path from untrusted input.
 - Example: [`examples/reel-with-module-transition.json`](examples/reel-with-module-transition.json).
+
+### v1.4 additions: reels told as a story (2026-10-05, from Kyle's review of the Talk 3 reel)
+
+Kyle asked for a reel that teaches: a section slide, a "what this covers" slide, the
+presenter's own overview, then each step with a slide saying why it matters; a link or
+QR code whenever a repo comes up; text on screen that says what the shared screen
+shows; and the shared screen large with the speaker small in a corner. All optional,
+so v1.0-v1.3 plans stay valid.
+
+- **`card.image`**: a PNG or JPEG shown beside the card's text (16:9: text left,
+  picture right; 9:16 and 1:1: picture below), scaled to fit, never cropped. For
+  screenshots of something the talk only described in words.
+- **`card.qr`**: an `http(s)` URL the renderer draws as a QR code, with the URL printed
+  under it. A card has `image` or `qr`, never both.
+- **`clips[].cards`**: up to four slides shown in order right before the clip (ahead of
+  `card` when both are set). Section openers and link cards go here.
+- **`clips[].overlays`**: `{start, end, text (≤120), position: top|bottom}`, times in
+  **source** seconds like segments. The text is burned over the clip while a kept
+  frame's source time is in `[start, end)`, so trimming never moves a label onto the
+  wrong picture. `top` (default) keeps it clear of captions.
+- **`clips[].layout`**: `{kind: full|pip, screen: [x,y,w,h], speaker: [x,y,w,h],
+  corner}`. `pip` frames a recorded screen share: `screen` fills the frame as large as
+  it fits, and `speaker` (the call's active-speaker tile) is shown small in `corner`,
+  beside the screen when the frame has room and over it otherwise. 16:9 only; other
+  aspects warn and ignore it. Meet recordings put the share and the speaker tile in
+  fixed places, so the bot can describe both regions in source pixels.
+
+Example: [`examples/reel-story-v14.json`](examples/reel-story-v14.json).
 
 ## Renderer obligations (what `render/` must do)
 
