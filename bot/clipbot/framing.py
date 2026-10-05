@@ -19,7 +19,10 @@ the framing file overrides them wherever it says something.
       "music_gain_db": -14, "music_fade_seconds": 1.0,   -> output.reel.music (needs --music or a style)
       "audio_fade_seconds": 0.2,               -> clip audio fade at every cut, 0-1
       "transition": "dip"  |  {"kind": "dissolve", "seconds": 0.5},
-      "style": "pipeline"                      -> the style pack (styles.py); --style overrides it
+      "style": "pipeline",                     -> the style pack (styles.py); --style overrides it
+      "layout": {"kind": "pip", "screen": [0, 240, 1440, 600], "speaker": [1440, 270, 480, 270]}
+                                               -> every clip's frame (story.py, contract v1.4): the
+                                                  shared screen large, the speaker tile in a corner
     }
 
 Everything is optional; unknown keys, wrong types and text over the contract's
@@ -46,7 +49,7 @@ MAX_CLOSING_CARDS = 3  # contract: closing maxItems
 KEYS = (
     "title", "date", "what_you_will_learn", "takeaways", "outro", "opening_seconds", "closing_seconds",
     "outro_seconds", "music_gain_db", "music_fade_seconds", "transition", "style",
-    "audio_fade_seconds",
+    "audio_fade_seconds", "layout",
 )
 
 
@@ -67,6 +70,7 @@ class Framing:
     transition_seconds: float | None = None
     style: str | None = None
     audio_fade_seconds: float | None = None
+    layout: dict | None = None  # default clip.layout (story.parse_layout)
 
     def outro_card(self) -> dict | None:
         """The outro card the file asks for, or None when it says nothing about it."""
@@ -151,6 +155,10 @@ def parse_framing(data, where: str = "framing") -> Framing:
         out["audio_fade_seconds"] = _number(data["audio_fade_seconds"], f"{where}.audio_fade_seconds", *AUDIO_FADE_RANGE)
     if "style" in data:
         out["style"] = _text(data["style"], f"{where}.style", TITLE_LIMIT)
+    if "layout" in data:
+        from .story import parse_layout  # story imports lessons, as this module does; no cycle at load time
+
+        out["layout"] = parse_layout(data["layout"], f"{where}.layout")
     return Framing(**out)
 
 

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from .captions import Cue
 from .cuts import (
@@ -52,6 +53,7 @@ from .cuts import (
     sentence_spans,
     tighten,
 )
+from . import story
 from .framing import MAX_CLOSING_CARDS, Framing
 from .lessons import (  # noqa: F401 - CARD_SECONDS / clip_text / limits are re-exported for callers and tests
     CARD_SECONDS,
@@ -116,6 +118,11 @@ class Moment:
     context: str = ""  # <= 120: what the room already knew
     segments: tuple[tuple[float, float], ...] = ()  # keep-list after cut_moments; empty = whole
     requested: tuple[float, float] | None = None  # the span before snapping, for the report
+    # contract v1.4 story fields (story.py), all validated already
+    cards: tuple[dict, ...] = ()  # slides before the chapter card
+    visual: tuple[tuple[str, str], ...] = ()  # (("image", path),) or (("qr", url),) on the chapter card
+    overlays: tuple[dict, ...] = ()  # labels in source seconds
+    layout: object = None  # None = framing's default, "full", or a pip dict
 
     @property
     def duration(self) -> float:
@@ -135,7 +142,11 @@ class Moment:
         else:
             title = self.title
         lines = [clip_text(ln, LINE_LIMIT) for ln in body if ln]
-        return {"title": clip_text(title, TITLE_LIMIT), "lines": [ln for ln in lines if ln][:4], "seconds": CARD_SECONDS}
+        card = {"title": clip_text(title, TITLE_LIMIT), "lines": [ln for ln in lines if ln][:4], "seconds": CARD_SECONDS}
+        if self.visual:
+            card.update(dict(self.visual))
+            card["seconds"] = story.DEFAULT_CARD_SECONDS
+        return card
 
     def spec(self) -> dict:
         """This moment as a --moments record (moments.json round-trip)."""
@@ -151,6 +162,13 @@ class Moment:
             out["lesson"] = self.lesson
         if self.context:
             out["context"] = self.context
+        if self.cards:
+            out["cards"] = [dict(c) for c in self.cards]
+        out.update(dict(self.visual))
+        if self.overlays:
+            out["overlays"] = [dict(o) for o in self.overlays]
+        if self.layout is not None:
+            out["layout"] = self.layout
         return out
 
 
@@ -480,7 +498,7 @@ def moment_from_cues(
 
 def moments_from_specs(
     specs: list[dict], cues: list[Cue], *, spans: list[Span] | None = None,
-    snapper: WordSnapper | Snapper | None = None,
+    snapper: WordSnapper | Snapper | None = None, base: str | Path | None = None,
 ) -> list[Moment]:
     """Snap human/LLM records to sentence boundaries; keep the given order.
 
@@ -491,7 +509,10 @@ def moments_from_specs(
     sentences stays put; with words it lands on the nearest word edge across
     the silence. `lesson`/`context` (<= 80 / <= 120) frame the moment for a
     viewer who was not there; `title`/`lines`/`why` keep working as before.
+    `cards`, `image`/`qr`, `overlays` and `layout` (story.py, contract v1.4) are
+    checked here; picture paths resolve against `base` (the moments file's folder).
     """
+    base = Path(base) if base is not None else None
     snapper = _snapper(cues, spans, snapper)
     out: list[Moment] = []
     for k, spec in enumerate(specs, 1):
@@ -522,6 +543,22 @@ def moments_from_specs(
                 requested=(asked_start, asked_end),
             )
         )
+        where = f"moment {k}"
+        extra = {}
+        if spec.get("cards") is not None:
+            extra["cards"] = story.parse_cards(spec["cards"], f"{where}.cards", base)
+        visual = story.card_visual(spec, where, base)
+        if visual:
+            extra["visual"] = tuple(visual.items())
+        if spec.get("overlays") is not None:
+            extra["overlays"] = story.parse_overlays(spec["overlays"], f"{where}.overlays", (asked_start, asked_end))
+        if spec.get("layout") is not None:
+            lay = spec["layout"]
+            extra["layout"] = lay if lay in ("full", "pip") else story.parse_layout(lay, f"{where}.layout")
+            if extra["layout"] is None:  # {"kind": "full"}
+                extra["layout"] = "full"
+        if extra:
+            out[-1] = replace(out[-1], **extra)
     return out
 
 
@@ -678,8 +715,9 @@ def plan_runtime(plan: dict) -> float:
         if card:
             total += float(card.get("seconds", CARD_SECONDS))
     for clip in plan["clips"]:
-        if clip.get("card"):
-            total += float(clip["card"].get("seconds", CARD_SECONDS))
+        for card in (*clip.get("cards", []), clip.get("card")):
+            if card:
+                total += float(card.get("seconds", CARD_SECONDS))
         total += sum(s["end"] - s["start"] for s in clip["segments"])
     return total
 
@@ -727,6 +765,23 @@ def build_reel_plan(
             {"start": round(a, 3), "end": round(b, 3)} for a, b in segments_for(m, lead=lead, tail=tail, duration=duration)
         ]
         clip["card"] = m.card()
+        if m.cards:
+            clip["cards"] = [dict(c) for c in m.cards]
+        if m.overlays:
+            kept = [(s["start"], s["end"]) for s in clip["segments"]]
+            overlays = story.clip_overlays(m.overlays, kept)
+            if overlays:
+                clip["overlays"] = overlays
+        if m.layout == "pip":
+            layout = fr.layout
+            if layout is None:
+                raise ValueError(f'moment "{m.title}": layout "pip" needs framing.layout with the screen region')
+        elif m.layout == "full":
+            layout = None
+        else:
+            layout = m.layout if m.layout is not None else fr.layout
+        if layout:
+            clip["layout"] = dict(layout)
     reel: dict = {
         "filename": "reel.mp4",
         "intro": {"title": clip_text(title, TITLE_LIMIT) or "Summary", "lines": [], "seconds": INTRO_SECONDS},
