@@ -592,7 +592,11 @@ def test_leak_check_fails_closed_when_tesseract_fails(monkeypatch):
 def test_check_and_patch_blurs_what_reads_back_and_stops_when_clean(monkeypatch, tmp_path):
     rounds = []
 
-    def fake_check(copy, *, boxes, **kw):
+    def fake_check(copy, *, boxes, every, spans, **kw):
+        if every < 0.1:  # the frame-by-frame look around a hit: the word one frame earlier, elsewhere
+            assert spans == [(2.0, 4.0)]
+            boxes.append((2.48, (100, 90, 60, 12), "term"))
+            return 50, [(2.48, "term", "Robin")]
         rounds.append(1)
         if len(rounds) == 1:
             boxes.append((3.0, (100, 100, 60, 12), "term"))
@@ -605,10 +609,13 @@ def test_check_and_patch_blurs_what_reads_back_and_stops_when_clean(monkeypatch,
     rs = rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [Redaction(0, 1, (0, 0, 20, 20), "email")], [(0, 10)],
                             info=rd.VideoInfo(640, 360, 25.0), terms=[], ocr="vision")
     assert len(rounds) == 2 and len(applied) == 1
-    assert any(r.why == "term (read back)" and r.start == 2.5 and r.end == 3.5 for r in rs)
+    assert any(r.start <= 2.0 and r.end >= 4.0 and r.box[1] < 100 for r in rs)  # the hit, widened to t ± 1 s
+    assert any(r.start <= 2.48 <= r.end and r.box[1] < 90 for r in rs)  # the frame-by-frame sighting, where it was
 
     rounds.clear()
     monkeypatch.setattr(rd, "leak_check", lambda copy, *, boxes, **kw: (10, [(1.0, "phone", "816-555-0144")]))
+    (tmp_path / "c.mp4").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="still readable"):
         rd.check_and_patch("s.mp4", tmp_path / "c.mp4", [], [(0, 10)], info=rd.VideoInfo(640, 360, 25.0),
                            terms=[], ocr="vision", rounds=1)
+    assert not (tmp_path / "c.mp4").exists() and (tmp_path / "c.unsafe.mp4").exists()

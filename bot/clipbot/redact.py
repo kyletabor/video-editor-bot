@@ -947,7 +947,12 @@ def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, i
     Why: on Talk #3 OCR missed a client's name in the busy frames of a scroll and read
     it in the blurred copy, where the rest of the screen was quieter. Detection alone is
     a net with holes; reading the result and patching the holes closes most of them.
-    Still readable after the last round is an error, not a shipped reel."""
+    Around every hit the copy is read frame by frame (a word in a scroll is in a new
+    place each frame, and the coarse read-back may see it in only one of the frames
+    where it shows), and each frame's hits are blurred on that frame and its
+    neighbours. Still readable after the last round is an error, and the copy is
+    renamed `.unsafe` so nothing renders from it by accident."""
+    frame = 1.0 / info.fps
     for k in range(rounds + 1):
         found: list = []
         frames, hits = leak_check(copy, terms=terms, every=CHECK_EVERY, ocr=ocr, spans=spans, boxes=found, log=log)
@@ -955,14 +960,35 @@ def check_and_patch(source, copy: Path, redactions: list[Redaction], spans, *, i
             log(f"redact: read back {frames} frames of the copy: nothing private readable")
             return redactions
         if k == rounds:
-            raise RuntimeError(f"redact: {len(hits)} private detail(s) still readable in {copy} after {rounds} "
-                               "extra round(s); add them to --redact-terms or a redactions file and run again")
-        log(f"redact: read back {frames} frames of the copy; {len(hits)} detail(s) still readable, blurring them")
+            unsafe = copy.with_name(copy.stem + ".unsafe" + copy.suffix)
+            copy.replace(unsafe)
+            raise RuntimeError(f"redact: {len(hits)} private detail(s) still readable in the copy after {rounds} "
+                               f"extra round(s) (kept as {unsafe.name} for inspection); add them to --redact-terms "
+                               "or a redactions file and run again")
+        around = merge_spans([(max(0.0, t - 2 * CHECK_EVERY), t + 2 * CHECK_EVERY) for t, _, _ in found])
+        dense: list = []
+        leak_check(copy, terms=terms, every=frame, ocr=ocr, spans=around, boxes=dense, log=log)
+        log(f"redact: read back {frames} frames of the copy; {len(hits)} detail(s) still readable, "
+            f"{len(dense)} sighting(s) frame by frame around them; blurring them")
         extra = []
         for t, box, why in found:
             clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 2)
             if clamped:
-                extra.append(Redaction(max(0.0, t - CHECK_EVERY), t + CHECK_EVERY, clamped, f"{why} (read back)"))
+                extra.append(Redaction(max(0.0, t - 2 * CHECK_EVERY), t + 2 * CHECK_EVERY, clamped, f"{why} (read back)"))
+        for t, box, why in dense:
+            clamped = clamp_box(box, info.width, info.height, pad=PAD_PIXELS + box[3] // 2)
+            if clamped:
+                extra.append(Redaction(max(0.0, t - 2 * frame), t + 2 * frame, clamped, f"{why} (read back)"))
         redactions = merge(redactions + extra)
         apply(source, redactions, copy, log=log)
     return redactions
+
+
+def merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
