@@ -805,6 +805,73 @@ def _clip_to_spans(r: Redaction, spans: list[tuple[float, float]], every: float)
     return replace(r, start=max(r.start, lo - every, 0.0), end=min(r.end, hi + every))
 
 
+# ----------------------------------------------------------------- checking the result
+
+def leak_check(video: str | Path, *, terms: list[re.Pattern[str]] = (), every: float = 0.5, ocr: str = "auto",
+               min_length: int = 3, log=lambda msg: None) -> tuple[int, list[tuple[float, str, str]]]:
+    """OCR a rendered video and list every private detail still readable: (seconds,
+    kind, text), first sighting of each text. Returns (frames read, hits).
+
+    Why: the blur is only as good as the boxes, and a reel must not be shared on the
+    strength of the boxes alone. The Talk #3 reel was checked this way by hand and the
+    check found a client's name readable for a second during a scroll; this makes that
+    check one command. Hits shorter than `min_length` characters ("ct" read inside
+    "Oct") are OCR noise, not a person's name. A clean result is evidence, not proof:
+    a human still watches the reel before it is shared."""
+    engine = resolve_ocr(ocr)
+    info = video_info(video)
+    duration = info.duration or 0.0
+    last = max(0.0, duration - 1.0 / info.fps)  # a seek to the very end returns no frame
+    times = [round(k * every, 3) for k in range(int(last / every) + 1)] if duration else [0.0]
+    tiles = tile_rects(info.width, info.height) if engine == "vision" else []
+    tesseract = shutil.which("tesseract") if engine == "tesseract" else None
+    patterns = [(k, p) for k, p in SENSITIVE.items()] + [("term", p) for p in terms]
+    seen: dict[tuple[str, str], tuple[float, str, str]] = {}
+    with tempfile.TemporaryDirectory(prefix="clipbot-leaks-") as tmp:
+        tmpdir = Path(tmp)
+
+        def read(k_t) -> list[tuple[float, str, str]]:
+            k, t = k_t
+            thumb = tmpdir / f"c{k:06d}.gray"
+            if engine == "vision":
+                pngs = [tmpdir / f"c{k:06d}-{n:03d}.png" for n in range(len(tiles))]
+                args = tile_frame_args(video, t, tiles, pngs, thumb)
+            else:
+                pngs = [tmpdir / f"c{k:06d}.png"]
+                args = frame_args(video, t, pngs[0], thumb)
+            subprocess.run(args, capture_output=True, text=True, check=True)
+            words: list[Word] = []
+            if engine == "vision":
+                for n, (png, rect) in enumerate(zip(pngs, tiles)):
+                    words += vision_words(png, rect, tile=n)
+            else:
+                out = subprocess.run([tesseract, str(pngs[0]), "stdout", "--psm", "11", "tsv"], capture_output=True,
+                                     text=True, env={**os.environ, "OMP_THREAD_LIMIT": "1"}).stdout
+                words = parse_tsv(out, OCR_SCALE)
+            for p in [*pngs, thumb]:
+                p.unlink(missing_ok=True)
+            lines: dict[tuple[int, int, int], list[str]] = {}
+            for w in words:
+                lines.setdefault(w.line, []).append(w.text)
+            hits = []
+            for text in (" ".join(ws) for ws in lines.values()):
+                for why, pat in patterns:
+                    for m in pat.finditer(text):
+                        if len(m.group().strip()) >= min_length and not (why == "card" and not luhn(m.group())):
+                            hits.append((t, why, m.group().strip()))
+            return hits
+
+        log(f"check: reading {len(times)} frames of {video} (every {every:g} s) with {engine}")
+        try:
+            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                for hits in pool.map(read, enumerate(times)):
+                    for t, why, text in hits:
+                        seen.setdefault((why, text.lower()), (t, why, text))
+        except FileNotFoundError as e:
+            raise RuntimeError("ffmpeg not found on PATH") from e
+    return len(times), sorted(seen.values())
+
+
 # ----------------------------------------------------------------- the step clipbot runs
 
 def redacted_path(source: str | Path, out_dir: str | Path) -> Path:

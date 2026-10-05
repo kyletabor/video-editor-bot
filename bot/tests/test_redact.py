@@ -543,3 +543,25 @@ def test_cli_reel_redact_reads_only_the_kept_segments_and_names_the_copy(tmp_pat
     assert seen["mode"] == "auto" and seen["out_dir"] == tmp_path
     kept = sorted((s["start"], s["end"]) for c in plan["clips"] for s in c["segments"])
     assert sorted((round(a, 3), round(b, 3)) for a, b in seen["spans"]) == kept  # OCR only what the reel shows
+
+
+@pytest.mark.skipif(not _vision_ready(), reason="needs ffmpeg, macOS and the vision extra")
+def test_check_redaction_finds_what_is_readable_and_passes_once_it_is_blurred(tmp_path, capsys):
+    """End to end: a screen with a phone, an e-mail and a name; the check lists them,
+    `run` blurs them, and the check on the copy comes back clean."""
+    png, src = tmp_path / "screen.png", tmp_path / "screen.mp4"
+    _draw_screen(png, [("Call 816-555-0144 about the invoice", 300, 300),
+                       ("Draft is in your pat@example.com folder", 900, 600),
+                       ("Weekly notes for Robin", 300, 800)], size=11.0)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-loop", "1", "-i", str(png), "-t", "3", "-r", "25",
+                    "-vf", "scale=1920:1080", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    terms = tmp_path / "names.txt"
+    terms.write_text("Robin\n")
+    assert cli.main(["check-redaction", "--video", str(src), "--terms", str(terms), "--every", "1"]) == 1
+    cap = capsys.readouterr()
+    listed = cap.out
+    assert "816-555-0144" in listed, cap.err and "pat@example.com" in listed and "Robin" in listed
+    copy, rs = rd.run(src, "auto", [(0, 3)], tmp_path / "out", terms_file=str(terms), every=1.0, ocr="vision")
+    assert {r.why for r in rs} >= {"phone", "email", "term"}
+    assert cli.main(["check-redaction", "--video", str(copy), "--terms", str(terms), "--every", "1"]) == 0
+    assert "nothing private readable" in capsys.readouterr().out
