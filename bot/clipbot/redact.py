@@ -625,6 +625,10 @@ def vision_words(png: Path, rect: tuple[int, int, int, int], *, tile: int = 0) -
         req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
         req.setUsesLanguageCorrection_(False)  # names, numbers and addresses are not dictionary words
         ok, err = handler.performRequests_error_([req], None)
+        for _ in range(2):  # Vision fails now and then under load (imageOperationFailed); a retry reads the frame
+            if ok:
+                break
+            ok, err = handler.performRequests_error_([req], None)
         if not ok:
             raise RuntimeError(f"redact: Apple Vision failed on a frame: {err}")
         words: list[Word] = []
