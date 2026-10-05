@@ -60,9 +60,11 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -81,11 +83,11 @@ PAD_PIXELS = 6  # around every OCR box: glyph tops, descenders and anti-aliasing
 MIN_BOX = 16  # boxblur needs room for its radius; nothing smaller hides a glyph
 THUMB = (192, 108)  # grey thumbnail compared between samples
 SAME_FRAME_DIFF = 8  # largest per-pixel |Δ| on it for two samples to count as the same picture
-MAX_RADIUS = 40
 WORKERS = 4
+BLUR_RADIUS = 20  # luma box radius, 3 passes: a 7-60 px word comes out as a smudge
 ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
 TAG = "clipbot-redact"
-VERSION = 2  # bump when the copy a given source + boxes produce changes (cached copies are then rewritten)
+VERSION = 3  # bump when the copy a given source + boxes produce changes (cached copies are then rewritten)
 
 # One regex per kind, run over each OCR line (words joined by single spaces).
 SENSITIVE: dict[str, re.Pattern[str]] = {
@@ -221,33 +223,84 @@ def write_redactions(path: str | Path, redactions: list[Redaction]) -> None:
 
 # ----------------------------------------------------------------- applying: ffmpeg
 
-def blur_radius(box: tuple[int, int, int, int]) -> tuple[int, int]:
-    """(luma, chroma) boxblur radii: as strong as the box allows. boxblur
-    refuses a radius above half the plane's smaller side, and the chroma planes
-    of yuv420p are half size."""
-    side = min(box[2], box[3])
-    return max(1, min(MAX_RADIUS, side // 2 - 1)), max(1, min(MAX_RADIUS // 2, side // 4 - 1))
+def mask_timeline(redactions: list[Redaction], duration: float, frame: float) -> list[tuple[float, float, tuple]]:
+    """[0, duration] cut into intervals, each with the boxes blurred during it
+    (empty tuple = nothing). Every range is widened by one frame on both sides: the
+    mask track is a still per interval resampled to the source's frame rate, and a
+    frame that lands on an interval edge must never fall on the unblurred side."""
+    edges = {0.0, float(duration)}
+    spans = []
+    for r in redactions:
+        a, b = max(0.0, r.start - frame), min(float(duration), r.end + frame)
+        if b > a:
+            spans.append((a, b, r.box))
+            edges.update((a, b))
+    cuts = sorted(edges)
+    out: list[tuple[float, float, tuple]] = []
+    for a, b in zip(cuts, cuts[1:]):
+        boxes = tuple(sorted({box for s, e, box in spans if s < b and e > a}))
+        if out and out[-1][2] == boxes:
+            out[-1] = (out[-1][0], b, boxes)
+        else:
+            out.append((a, b, boxes))
+    return out
 
 
-def filter_graph(redactions: list[Redaction]) -> str:
-    """One crop + boxblur + overlay per redaction, enabled only in its range.
-    Without -copyts ffmpeg shifts the input so its first frame is t = 0, the same
-    clock `-ss` and the renderer use, so the ranges go in as written (a .ts
-    source starting at 1.46 s was blurred 1.46 s late when they were shifted)."""
-    if not redactions:
-        return "[0:v]null[vout]"
-    n = len(redactions)
-    parts = [f"[0:v]split={n + 1}[base]" + "".join(f"[c{k}]" for k in range(n))]
-    prev = "base"
-    for k, r in enumerate(redactions):
-        x, y, w, h = r.box
-        lr, cr = blur_radius(r.box)
-        a, b = r.start, r.end
-        out = "vout" if k == n - 1 else f"v{k}"
-        parts.append(f"[c{k}]crop={w}:{h}:{x}:{y},boxblur=luma_radius={lr}:luma_power=3:chroma_radius={cr}:chroma_power=3[b{k}]")
-        parts.append(f"[{prev}][b{k}]overlay={x}:{y}:enable='between(t,{a:.3f},{b:.3f})'[{out}]")
-        prev = out
-    return ";".join(parts)
+def _png_gray(width: int, height: int, boxes) -> bytes:
+    """An 8-bit greyscale PNG: white inside the boxes, black elsewhere (no Pillow needed)."""
+    row_black = bytes(width)
+    rows = []
+    for y in range(height):
+        row = bytearray(row_black)
+        for x, by, w, h in boxes:
+            if by <= y < by + h:
+                row[x:x + w] = b"\xff" * len(row[x:x + w])
+        rows.append(b"\x00" + bytes(row))
+    raw = zlib.compress(b"".join(rows), 6)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
+
+
+def write_mask_track(redactions: list[Redaction], info: "VideoInfo", folder: Path) -> Path:
+    """One mask PNG per distinct set of boxes and an ffconcat list that shows each
+    for its interval: the mask track `apply` blends through. Returns the list."""
+    duration = info.duration or max((r.end for r in redactions), default=1.0) + 1.0
+    frame = 1.0 / info.fps
+    pngs: dict[tuple, Path] = {}
+    lines = ["ffconcat version 1.0"]
+    timeline = mask_timeline(redactions, duration, frame) + [(duration, duration + 2.0, ())]  # padding past the end
+    for a, b, boxes in timeline:
+        if boxes not in pngs:
+            png = folder / f"mask{len(pngs):04d}.png"
+            png.write_bytes(_png_gray(info.width, info.height, boxes))
+            pngs[boxes] = png
+        lines += [f"file '{pngs[boxes].name}'", f"duration {b - a:.6f}"]
+    lines.append(f"file '{pngs[timeline[-1][2]].name}'")  # the concat demuxer drops the last duration otherwise
+    listing = folder / "masks.ffconcat"
+    listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return listing
+
+
+def filter_graph(info: "VideoInfo") -> str:
+    """Every frame blurred once, then shown only where the mask track is white.
+
+    Why a mask track instead of one crop + blur + overlay per box: Talk #3 needed 471
+    boxes, and that graph split every frame 472 ways; the hour-long copy had not
+    finished after an hour. One blur and one alpha blend per frame cost the same for
+    5 boxes or 5,000 and wrote the same copy in about 12 minutes. Without -copyts
+    ffmpeg shifts the source so its first frame is t = 0, and the mask track also
+    starts at 0, so the ranges go in as written (a .ts source starting at 1.46 s was
+    once blurred 1.46 s late when they were shifted)."""
+    luma = max(1, min(BLUR_RADIUS, min(info.width, info.height) // 2 - 1))  # boxblur's limit is half a side
+    chroma = max(1, min(BLUR_RADIUS // 2, min(info.width, info.height) // 4 - 1))  # yuv420p chroma is half size
+    blur = f"boxblur=luma_radius={luma}:luma_power=3:chroma_radius={chroma}:chroma_power=3"
+    return (f"[0:v]split=2[base][soft];[soft]{blur}[blur];"
+            f"[1:v]fps={info.fps:.6f},format=gray,scale={info.width}:{info.height}[mask];"
+            "[blur][mask]alphamerge[masked];[base][masked]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[vout]")
 
 
 def fingerprint(source: str | Path, redactions: list[Redaction]) -> str:
@@ -271,14 +324,15 @@ def _stored_fingerprint(path: Path) -> str | None:
     return comment[len(TAG) + 1:] if comment.startswith(TAG + ":") else None
 
 
-def apply_args(source: str | Path, redactions: list[Redaction], out: str | Path, *, tag: str = "") -> list[str]:
+def apply_args(source: str | Path, masks: Path, info: "VideoInfo", out: str | Path, *, tag: str = "") -> list[str]:
     """ffmpeg argv for the redacted copy: video re-encoded through the blur
-    graph, audio copied as is, text captions converted to mov_text (the one
-    caption codec mp4 holds: an MKV's subrip cannot be copied in) so the renderer
-    still reads them from the copy, container metadata kept."""
+    graph and the mask track (`write_mask_track`), audio copied as is, text captions
+    converted to mov_text (the one caption codec mp4 holds: an MKV's subrip cannot be
+    copied in) so the renderer still reads them from the copy, container metadata kept."""
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y", "-i", str(source),
-        "-filter_complex", filter_graph(redactions),
+        "-f", "concat", "-safe", "0", "-i", str(masks),
+        "-filter_complex", filter_graph(info),
         "-map", "[vout]", "-map", "0:a?", "-map", "0:s?",
         *ENCODE, "-c:a", "copy", "-c:s", "mov_text",
         "-map_metadata", "0", "-metadata", f"comment={TAG}:{tag}", "-movflags", "+faststart",
@@ -296,10 +350,12 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, l
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".partial" + out.suffix)
     log(f"redact: writing {out} ({len(redactions)} blurred region(s)); the whole video is re-encoded, "
-        "about a quarter of its length on a laptop")
+        "about a fifth of its length")
+    info = video_info(source)
     try:
-        proc = subprocess.run(apply_args(source, redactions, tmp, tag=tag),
-                              capture_output=True, text=True)
+        with tempfile.TemporaryDirectory(prefix="clipbot-masks-") as folder:
+            masks = write_mask_track(redactions, info, Path(folder))
+            proc = subprocess.run(apply_args(source, masks, info, tmp, tag=tag), capture_output=True, text=True)
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH") from e
     if proc.returncode:
@@ -317,13 +373,16 @@ def apply(source: str | Path, redactions: list[Redaction], out: str | Path, *, l
 class VideoInfo:
     width: int
     height: int
+    fps: float = 25.0
+    duration: float | None = None
 
 
 def video_info(source: str | Path) -> VideoInfo:
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-             "-of", "json", str(source)], check=True, capture_output=True, text=True,
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height,avg_frame_rate,r_frame_rate:format=duration", "-of", "json", str(source)],
+            check=True, capture_output=True, text=True,
         ).stdout
     except FileNotFoundError as e:
         raise RuntimeError("ffprobe not found on PATH") from e
@@ -333,7 +392,21 @@ def video_info(source: str | Path) -> VideoInfo:
     streams = data.get("streams") or []
     if not streams:
         raise RuntimeError(f"{source}: no video stream to redact")
-    return VideoInfo(int(streams[0]["width"]), int(streams[0]["height"]))
+    st = streams[0]
+    fps = 25.0
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        num, _, den = str(st.get(key) or "0/0").partition("/")
+        try:
+            if float(num) > 0 and float(den or 1) > 0:
+                fps = float(num) / float(den or 1)
+                break
+        except ValueError:
+            continue
+    try:
+        duration = float(data.get("format", {}).get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    return VideoInfo(int(st["width"]), int(st["height"]), fps, duration)
 
 
 # ----------------------------------------------------------------- detection: sample + OCR

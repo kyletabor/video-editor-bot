@@ -64,14 +64,6 @@ def test_merge_joins_the_same_box_across_touching_ranges_only():
     assert both == [Redaction(0, 4, (0, 0, 100, 20), "key, token")]
 
 
-def test_blur_radius_respects_boxblur_limits():
-    assert rd.blur_radius((0, 0, 1440, 620)) == (rd.MAX_RADIUS, rd.MAX_RADIUS // 2)
-    lr, cr = rd.blur_radius((0, 0, 200, 16))
-    assert lr <= 16 // 2 and cr <= 16 // 4 and lr >= 1 and cr >= 1
-
-
-# ----------------------------------------------------------------- redactions.json
-
 def test_load_redactions_reads_clock_times_and_clamps(tmp_path):
     p = tmp_path / "r.json"
     p.write_text(json.dumps([
@@ -105,18 +97,38 @@ def test_write_then_load_round_trips(tmp_path):
 
 # ----------------------------------------------------------------- ffmpeg arguments
 
-def test_filter_graph_blurs_each_box_only_in_its_range():
-    g = rd.filter_graph([Redaction(1.5, 2.5, (0, 230, 1440, 620)), Redaction(5.5, 7, (100, 100, 40, 20))])
-    assert g.startswith("[0:v]split=3[base][c0][c1];")
-    assert "[c0]crop=1440:620:0:230,boxblur=luma_radius=40:luma_power=3:chroma_radius=20:chroma_power=3[b0]" in g
-    assert "[base][b0]overlay=0:230:enable='between(t,1.500,2.500)'[v0]" in g
-    assert "[v0][b1]overlay=100:100:enable='between(t,5.500,7.000)'[vout]" in g
-    assert rd.filter_graph([]) == "[0:v]null[vout]"
+def test_mask_timeline_widens_by_a_frame_and_merges_equal_neighbours():
+    a, b = (0, 230, 1440, 620), (100, 100, 40, 20)
+    tl = rd.mask_timeline([Redaction(1.5, 2.5, a), Redaction(2.0, 7, b), Redaction(7.0, 9, b)], 10, 0.04)
+    assert tl == [(0.0, 1.46, ()), (1.46, 1.96, (a,)), (1.96, 2.54, tuple(sorted({a, b}))),
+                  (2.54, 9.04, (b,)), (9.04, 10.0, ())]
+    assert rd.mask_timeline([], 4, 0.04) == [(0.0, 4.0, ())]
+
+
+def test_mask_track_writes_one_png_per_distinct_mask_and_a_concat_list(tmp_path):
+    info = rd.VideoInfo(64, 48, 25.0, 10.0)
+    listing = rd.write_mask_track([Redaction(1, 2, (8, 8, 16, 16)), Redaction(5, 6, (8, 8, 16, 16))], info, tmp_path)
+    text = listing.read_text().splitlines()
+    assert text[0] == "ffconcat version 1.0"
+    files = [ln for ln in text if ln.startswith("file")]
+    assert len(set(files)) == 2 and len(list(tmp_path.glob("mask*.png"))) == 2  # black and the one box, reused
+    durations = [float(ln.split()[1]) for ln in text if ln.startswith("duration")]
+    assert sum(durations) == pytest.approx(10 + 2)  # the source plus the padding past its end
+    png = (tmp_path / "mask0000.png").read_bytes()
+    assert png.startswith(b"\x89PNG") and b"IHDR" in png
+
+
+def test_filter_graph_is_one_blur_and_one_blend_whatever_the_box_count():
+    g = rd.filter_graph(rd.VideoInfo(1920, 1080, 24.0))
+    assert g.count("boxblur") == 1 and g.count("alphamerge") == 1 and "fps=24.000000" in g
+    assert "luma_radius=20" in g and g.endswith("[vout]")
+    assert "luma_radius=7" in rd.filter_graph(rd.VideoInfo(32, 16, 25.0))  # small frames: boxblur's limit
 
 
 def test_apply_args_copy_audio_and_captions_and_tag_the_file():
-    args = rd.apply_args("in file.mp4", [Redaction(0, 1, (0, 0, 20, 20))], "out.mp4", tag="abc")
+    args = rd.apply_args("in file.mp4", Path("m/masks.ffconcat"), rd.VideoInfo(640, 360, 25.0), "out.mp4", tag="abc")
     assert args[0] == "ffmpeg" and "in file.mp4" in args and args[-1] == "out.mp4"
+    assert args[args.index("concat") - 1] == "-f" and str(Path("m/masks.ffconcat")) in args
     assert args[args.index("-c:a") + 1] == "copy" and args[args.index("-c:s") + 1] == "mov_text"
     assert ["-map", "0:a?"] == args[args.index("0:a?") - 1: args.index("0:a?") + 1]
     assert ["-map", "0:s?"] == args[args.index("0:s?") - 1: args.index("0:s?") + 1]
@@ -330,7 +342,7 @@ def _make_source(tmp_path: Path) -> Path:
         "ffmpeg", "-nostdin", "-v", "error", "-y",
         "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=4", "-f", "lavfi", "-i", "sine=f=440:d=4", "-i", str(srt),
         "-map", "0:v", "-map", "1:a", "-map", "2:s", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-        "-c:s", "mov_text", "-shortest", str(src),
+        "-c:s", "mov_text", "-t", "4", str(src),  # -t, not -shortest: ffmpeg 9 never ends with an srt input
     ], check=True)
     return src
 
