@@ -110,7 +110,9 @@ def test_quiet_runs_in_the_music_file_show_as_no_music(tmp_path):
     plan = json.loads(json.dumps(PLAN))
     scenes = sb.scenes_of(plan)
     runs = sb.card_run_groups(scenes)
-    lengths = [sum(s.seconds for s in r) for r in runs]  # first run, chapter b, closing+outro
+    from clipbot.score import card_runs, source_fps
+    lengths = [float(r.seconds) for r in card_runs(plan, source_fps(plan["source"]["path"]))]
+    assert len(lengths) == len(runs) == 3  # first run, chapter b, closing+outro
     wav = tmp_path / "cues.wav"
     tone = "sine=f=440:sample_rate=8000"
     parts = [f"{tone}:d={lengths[0]}", f"anullsrc=r=8000:cl=mono:d={lengths[1]}", f"{tone}:d={lengths[2]}"]
