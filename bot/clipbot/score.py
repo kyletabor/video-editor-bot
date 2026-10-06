@@ -287,11 +287,24 @@ def plan_cue(seconds, position: str, blocks: Blocks, sting: int = 0) -> list[Pla
     return placements + _hold(blocks, lead + count * blocks.bar, seconds)
 
 
-def score(plan: dict, style: Style, fps: Fraction) -> list[tuple[Run, list[Placement]]]:
-    """Every card run of the plan with its cue; the chapter stings rotate through the reel."""
+MUSIC_AT = ("cards", "ends")
+
+
+def score(plan: dict, style: Style, fps: Fraction, at: str = "cards") -> list[tuple[Run, list[Placement]]]:
+    """Every card run of the plan with its cue; the chapter stings rotate through the reel.
+
+    `at="ends"`: only the first and last runs get music; the chapter cards between clips stay
+    quiet. Kyle on the Talk #3 reel (2026-10-05): with a sting on every slide "the music kept
+    jumping around". The quiet runs keep their place in the file as silence, so the renderer's
+    running offsets still line every cue up with its run."""
+    if at not in MUSIC_AT:
+        raise ValueError(f"music at {at!r}: one of {', '.join(MUSIC_AT)}")
     blocks = blocks_of(style)
     scored, sting = [], 0
     for run in card_runs(plan, fps):
+        if at == "ends" and run.position == "middle":
+            scored.append((run, []))
+            continue
         cue = plan_cue(run.seconds, run.position, blocks, sting)
         if run.position == "middle":
             sting += 1
@@ -389,7 +402,7 @@ def describe(scored: list[tuple[Run, list[Placement]]]) -> str:
 
 
 def style_music(plan: dict, style: Style, out_dir: Path, *, gain_db: float | None = None,
-                fade_seconds: float | None = None) -> tuple[dict | None, str]:
+                fade_seconds: float | None = None, at: str = "cards") -> tuple[dict | None, str]:
     """`output.reel.music` for this plan in this style, and a line for the terminal.
 
     A bed style points the plan at the bed. A cues style writes `music-cues.wav` next to the
@@ -411,7 +424,7 @@ def style_music(plan: dict, style: Style, out_dir: Path, *, gain_db: float | Non
     verify_blocks(style)
     source = Path(plan["source"]["path"])
     fps = source_fps(source if source.is_absolute() else REPO_ROOT / source)
-    scored = score(plan, style, fps)
+    scored = score(plan, style, fps, at)
     path = Path(out_dir) / "music-cues.wav"
     if not render_cues(scored, path):
         return None, f"style {style.name}: the cards are too short for any music"

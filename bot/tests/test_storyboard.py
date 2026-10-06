@@ -99,3 +99,26 @@ def test_a_reel_that_opens_on_a_clip_has_no_opening_theme():
     reel["chapter_cards"] = "auto"  # the first clip has no card: the reel opens on speech
     scenes = sb.scenes_of(plan)
     assert scenes[0].kind == "clip" and not any(s.music.startswith("music IN: theme opens") for s in scenes)
+
+
+def test_quiet_runs_in_the_music_file_show_as_no_music(tmp_path):
+    import subprocess
+    import shutil
+    if not shutil.which("ffmpeg"):
+        import pytest
+        pytest.skip("needs ffmpeg")
+    plan = json.loads(json.dumps(PLAN))
+    scenes = sb.scenes_of(plan)
+    runs = sb.card_run_groups(scenes)
+    lengths = [sum(s.seconds for s in r) for r in runs]  # first run, chapter b, closing+outro
+    wav = tmp_path / "cues.wav"
+    tone = "sine=f=440:sample_rate=8000"
+    parts = [f"{tone}:d={lengths[0]}", f"anullsrc=r=8000:cl=mono:d={lengths[1]}", f"{tone}:d={lengths[2]}"]
+    args = ["ffmpeg", "-v", "error", "-y"]
+    for p in parts:
+        args += ["-f", "lavfi", "-i", p]
+    args += ["-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", str(wav)]
+    subprocess.run(args, check=True)
+    plan["output"]["reel"]["music"]["path"] = str(wav)
+    page = sb.build(plan, [])
+    assert "no music (quiet slide)" in page and "music IN: theme opens" in page and "STING" not in page

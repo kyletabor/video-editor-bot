@@ -239,6 +239,11 @@ uv run --project bot --extra vision clipbot storyboard --plan out/talk/plan.json
   --words talk.words.json --thumbs-from talk.redacted.mp4 --note "Music only at the ends"
 ```
 
+Music: with `"music_at": "ends"` in the framing file (or `clipbot score --music-at ends`) a cues
+style plays only under the opening and the closing slides; the step slides between clips stay
+quiet. With a sting on every slide the Talk #3 music "kept jumping around". The storyboard
+reads the music file and marks every quiet slide, so the board shows what the reel will do.
+
 `--thumbs-from` takes the frames from another copy (a blurred one, so the page never
 shows what the reel will hide); `--note` adds lines to a "decisions for review" box.
 Publish the page where the reviewer can comment, settle it, then render.
