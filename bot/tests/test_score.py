@@ -311,3 +311,18 @@ def test_cli_reel_with_a_cue_style_writes_the_cues_and_points_the_plan_at_them(t
     out.write_text(json.dumps(rescored), encoding="utf-8")
     assert cli.main(["score", str(out), "--style", "pipeline"]) == 1
     assert "is not there to take the frame rate from" in capsys.readouterr().err
+
+
+def test_music_at_ends_leaves_the_chapter_cards_quiet_but_keeps_their_place(monkeypatch):
+    monkeypatch.setattr(score, "blocks_of", lambda style: blocks())
+    p = plan()
+    every = score.score(p, None, F(25))
+    ends = score.score(p, None, F(25), "ends")
+    assert [run.position for run, _ in ends] == [run.position for run, _ in every]
+    for (run, cue), (_, full) in zip(ends, every):
+        if run.position == "middle":
+            assert cue == [] and full  # a sting before; silence now, same run, same length
+        else:
+            assert cue == full
+    with pytest.raises(ValueError, match="music at"):
+        score.score(p, None, F(25), "slides")

@@ -323,6 +323,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
             music, note = scoremod.style_music(
                 plan, style, out_dir, gain_db=framing.music_gain_db if framing else None,
                 fade_seconds=framing.music_fade_seconds if framing else None,
+                at=(framing.music_at if framing and framing.music_at else "cards"),
             )
             if music:
                 reel["music"] = music
@@ -397,7 +398,7 @@ def cmd_score(a: argparse.Namespace) -> int:
     if not reel:
         print("clipbot: the plan has no output.reel to score", file=sys.stderr)
         return 2
-    music, note = scoremod.style_music(plan, stylesmod.load(a.style), path.parent, gain_db=a.gain_db)
+    music, note = scoremod.style_music(plan, stylesmod.load(a.style), path.parent, gain_db=a.gain_db, at=a.music_at)
     if music:
         reel["music"] = music
     else:
@@ -678,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
     psc.add_argument("plan", help="edit plan JSON with an output.reel (clipbot reel --out)")
     psc.add_argument("--style", required=True, help="style name or directory")
     psc.add_argument("--gain-db", type=float, default=None, help="music level under the cards (default: the style's)")
+    psc.add_argument("--music-at", default="cards", choices=scoremod.MUSIC_AT,
+                     help="cards: a cue on every run of slides (default); ends: only the opening and the closing")
     psc.set_defaults(fn=cmd_score)
 
     pa = sub.add_parser("audit-plan", help="measure the audio on both sides of every segment edge of a plan")

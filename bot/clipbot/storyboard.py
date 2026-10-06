@@ -33,6 +33,7 @@ CARD_SECONDS = 3.0
 THUMB_WIDTH = 480
 QUOTE_WORDS = 70  # dialogue shown per scene: the opening words and the last few
 QUOTE_TAIL = 18
+QUIET_RMS = 30.0  # 16-bit RMS under which a run of the music file counts as silent (about -60 dBFS)
 
 
 @dataclass
@@ -115,7 +116,41 @@ def scenes_of(plan: dict) -> list[Scene]:
     return out
 
 
-def describe_music(scenes: list[Scene], music: dict | None) -> None:
+def card_run_groups(scenes: list[Scene]) -> list[list[Scene]]:
+    """Consecutive slides, in order: what score.py writes one cue for."""
+    runs: list[list[Scene]] = []
+    for s in scenes:
+        if s.kind == "card":
+            if runs and runs[-1][-1].number == s.number - 1:
+                runs[-1].append(s)
+            else:
+                runs.append([s])
+    return runs
+
+
+def run_loudness(path: str | Path, runs: list[list[Scene]], lengths: list[float] | None = None,
+                 rate: int = 8000) -> list[float] | None:
+    """RMS of the music file over each card run, in run order. With `under: cards` the
+    renderer plays the file's runs back to back from a running offset, so run k is the k-th
+    slice; a silent slice is a run the score left quiet (framing "music_at": "ends")."""
+    proc = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(rate),
+                           "-f", "s16le", "-"], capture_output=True)
+    if proc.returncode or not proc.stdout:
+        return None
+    pcm = memoryview(proc.stdout).cast("h")
+    out, at = [], 0.0
+    if lengths is not None and len(lengths) != len(runs):
+        lengths = None
+    for k, run in enumerate(runs):
+        seconds = lengths[k] if lengths is not None else sum(s.seconds for s in run)
+        a, b = int(at * rate), min(len(pcm), int((at + seconds) * rate))
+        chunk = pcm[a:b]
+        out.append((sum(x * x for x in chunk[::4]) / max(1, len(chunk[::4]))) ** 0.5 if b > a else 0.0)
+        at += seconds
+    return out
+
+
+def describe_music(scenes: list[Scene], music: dict | None, quiet_runs: set[int] = frozenset()) -> None:
     """What the audio does in each scene, in the words an editor would use.
 
     With `under: cards` (score.py) every run of consecutive slides gets its own cue:
@@ -127,14 +162,12 @@ def describe_music(scenes: list[Scene], music: dict | None) -> None:
             s.music = "no music" if s.kind == "card" else "speech only"
         return
     under = music.get("under", "cards")
-    runs: list[list[Scene]] = []
-    for s in scenes:
-        if s.kind == "card":
-            if runs and runs[-1][-1].number == s.number - 1:
-                runs[-1].append(s)
-            else:
-                runs.append([s])
+    runs = card_run_groups(scenes)
     for k, run in enumerate(runs):
+        if k in quiet_runs:
+            for s in run:
+                s.music, s.music_on = "no music (quiet slide)", False
+            continue
         # score.card_runs: "first" only when the reel opens on it, "last" only when the reel ends on it
         first, last = run[0] is scenes[0], run[-1] is scenes[-1]
         for i, s in enumerate(run):
@@ -333,6 +366,17 @@ def render_html(scenes: list[Scene], *, title: str, source_name: str, notes: lis
 def build(plan: dict, cues: list[Cue], *, words: list[Word] | None = None, source: str | Path | None = None,
           title: str | None = None, notes: list[str] = ()) -> str:
     scenes = scenes_of(plan)
+    music = (plan.get("output", {}).get("reel") or {}).get("music")
+    if music and music.get("under", "cards") == "cards" and Path(music.get("path", "")).is_file():
+        lengths = None
+        try:  # the score's own run lengths (whole frames, transition overlaps), when the source can be probed
+            from .score import card_runs, source_fps
+            lengths = [float(r.seconds) for r in card_runs(plan, source_fps(plan["source"]["path"]))]
+        except Exception:  # noqa: BLE001 - fall back to the slides' nominal seconds
+            lengths = None
+        levels = run_loudness(music["path"], card_run_groups(scenes), lengths)
+        if levels:
+            describe_music(scenes, music, {k for k, v in enumerate(levels) if v < QUIET_RMS})
     attach_dialogue(scenes, cues, words)
     if source:
         clips = iter(plan["clips"])
