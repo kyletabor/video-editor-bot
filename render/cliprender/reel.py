@@ -163,8 +163,10 @@ def timeline(plan, reel, resolve=None):
     clips = plan["clips"]
     items = []
     if "intro" in reel:
-        items.append(Card.from_plan(reel["intro"], resolve=resolve))
-    items.extend(Card.from_plan(card, resolve=resolve) for card in reel.get("opening", []))
+        items.append(Card.from_plan(reel["intro"], resolve=resolve, kind="intro"))
+    items.extend(
+        Card.from_plan(card, resolve=resolve, kind="opening") for card in reel.get("opening", [])
+    )
     for index, clip in enumerate(clips, 1):
         card = clip.get("card")
         if card is None and mode == "all":
@@ -172,14 +174,21 @@ def timeline(plan, reel, resolve=None):
         before = list(clip.get("cards", []))
         if card is not None and mode != "none":
             before.append(card)
-        footer = chapter_footer(index, len(clips), clip["segments"][0]["start"])
+        start = clip["segments"][0]["start"]
+        footer = chapter_footer(index, len(clips), start)
         for position, spec in enumerate(before, 1):
-            last = position == len(before) and mode != "none"
-            items.append(Card.from_plan(spec, footer if last else "", resolve))
+            if position == len(before) and mode != "none":
+                items.append(
+                    Card.from_plan(spec, footer, resolve, "chapter", (index, len(clips)), start)
+                )
+            else:
+                items.append(Card.from_plan(spec, "", resolve, "section"))
         items.append(clip["id"])
-    items.extend(Card.from_plan(card, resolve=resolve) for card in reel.get("closing", []))
+    items.extend(
+        Card.from_plan(card, resolve=resolve, kind="closing") for card in reel.get("closing", [])
+    )
     if "outro" in reel:
-        items.append(Card.from_plan(reel["outro"], resolve=resolve))
+        items.append(Card.from_plan(reel["outro"], resolve=resolve, kind="outro"))
     return items
 
 
@@ -867,6 +876,7 @@ def render_reel(
     title,
     style=None,
     draw=None,
+    theme=None,
 ):
     """Draw the cards, conform every piece, bridge the dissolves, mix the music, join, verify.
 
@@ -878,6 +888,7 @@ def render_reel(
     piece's decoder and encoder, or a few seconds of audio, whatever the reel's length.
     `draw` is the already loaded `render` of `style.module`; it is loaded here when the
     caller has not (the caller loads it early, so a broken module fails before any encode).
+    `theme` (`cliprender.themes.Theme`) draws the cards; None keeps the default look.
     """
     module = style.module if style is not None else None
     if module is not None and draw is None:
@@ -889,7 +900,7 @@ def render_reel(
     sources, durations, cards = [], [], []
     for position, item in enumerate(items):
         if isinstance(item, Card):
-            png = write_card_png(item, dimensions, workspace / f"card-{position:02d}.png")
+            png = write_card_png(item, dimensions, workspace / f"card-{position:02d}.png", theme)
             inputs = ["-loop", "1", "-framerate", fps_text(fps), "-i", png.name]
             if audio:
                 inputs += ["-f", "lavfi", "-i", f"anullsrc=r={rate}:cl={layout}"]

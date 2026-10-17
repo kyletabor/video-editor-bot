@@ -73,13 +73,20 @@ class Card:
     # v1.4: at most one picture, a resolved PNG/JPEG path or a URL to draw as a QR code.
     image: Path | None = None
     qr: str | None = None
+    # Where the card sits in the reel, for themes (`cliprender.themes`); the default look
+    # ignores it. `kind` is intro, opening, section (a v1.4 slide before a clip), chapter,
+    # closing or outro; a counted chapter card also has `chapter` = (k, N) and `at`, the
+    # source second its clip starts.
+    kind: str = "chapter"
+    chapter: tuple[int, int] | None = None
+    at: Fraction | None = None
 
     @property
     def has_picture(self):
         return self.image is not None or self.qr is not None
 
     @classmethod
-    def from_plan(cls, spec, footer="", resolve=None):
+    def from_plan(cls, spec, footer="", resolve=None, kind="chapter", chapter=None, at=None):
         """`resolve` turns the plan's `image` path into an absolute one (the renderer's
         repo-root rule); without it the path is taken as written."""
         image = spec.get("image")
@@ -92,6 +99,9 @@ class Card:
             footer,
             image,
             spec.get("qr"),
+            kind,
+            chapter,
+            None if at is None else Fraction(str(at)),
         )
 
 
@@ -210,7 +220,7 @@ def fits(rows, font, max_width, max_rows):
     return len(rows) <= max_rows and all(font.getlength(row) <= max_width for row in rows)
 
 
-def fit_block(texts, base_size, column, max_rows, start=0):
+def fit_block(texts, base_size, column, max_rows, start=0, loader=None):
     """Wrap every text at the largest shrink step (from `start`) where all fit `max_rows` rows.
 
     Returns `(step index, font, rows per text)`. The texts share one font because they are one
@@ -218,14 +228,16 @@ def fit_block(texts, base_size, column, max_rows, start=0):
     smallest step does not fit, words wider than the column are split and rows beyond
     `max_rows` end in an ellipsis: a fallback that text within the contract never reaches on
     a contract aspect, so a viewer only ever sees it for an over-long plan or an odd frame.
+    `loader(size)` returns the face to set the block in (a theme's); default `load_font`.
     """
+    loader = loader or load_font
     last = len(SHRINK_STEPS) - 1
     for index in range(min(start, last), last + 1):
-        font = load_font(base_size * SHRINK_STEPS[index])
+        font = loader(base_size * SHRINK_STEPS[index])
         wrapped = [wrap(text, font, column) for text in texts]
         if all(fits(rows, font, column, max_rows) for rows in wrapped):
             return index, font, wrapped
-    font = load_font(base_size * SHRINK_STEPS[last])
+    font = loader(base_size * SHRINK_STEPS[last])
     wrapped = []
     for text in texts:
         rows = wrap(text, font, column, break_words=True)
@@ -493,8 +505,10 @@ def draw_qr(canvas, place):
         y += place.url_step
 
 
-def write_card_png(card, size, path):
+def write_card_png(card, size, path, theme=None):
     """The card as a PNG; `cliprender.reel` turns it into a reel piece directly (the image
-    looped at the reel's frame rate over generated silence), so a card is encoded once."""
-    draw_card(card, size).save(path, format="PNG")
+    looped at the reel's frame rate over generated silence), so a card is encoded once.
+    `theme` (`cliprender.themes.Theme`) draws it instead of the default look."""
+    image = theme.draw_card(card, size) if theme is not None else draw_card(card, size)
+    image.save(path, format="PNG")
     return path

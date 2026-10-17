@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .renderer import RenderError, render_plan
+from .themes import THEMES
 
 
 def main(argv=None):
@@ -15,6 +16,12 @@ def main(argv=None):
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--timeout", type=float, default=1800, help="Seconds per media process")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing results")
+    parser.add_argument(
+        "--theme",
+        default=None,
+        metavar="NAME|FILE",
+        help=f"Card, caption and label look: {', '.join(THEMES)}, or a theme JSON file",
+    )
     args = parser.parse_args(argv)
     try:
         for clip_id, path, duration in render_plan(
@@ -24,6 +31,7 @@ def main(argv=None):
             ffprobe=args.ffprobe,
             timeout=args.timeout,
             overwrite=args.overwrite,
+            theme=args.theme,
         ):
             print(f"{clip_id}\t{path}\t{duration:.6f}")
     except (RenderError, OSError, ValueError) as exc:
