@@ -789,6 +789,14 @@ def render_plan(
             warn(
                 f"clip {clip['id']}: speaker tracking is unavailable; using the contract's center fallback"
             )
+    if reel is not None and theme is not None:
+        for card in reel_cards:
+            try:
+                theme.draw_card(card, planned[0][3])
+            except (OSError, ValueError) as exc:
+                raise RenderError(
+                    f"Theme {theme.name} cannot draw card {card.title!r}: {exc}"
+                ) from exc
     if reel is not None:
         planned_length = planned_seconds(reel_items, plan)
         if planned_length > MAX_RECOMMENDED_SECONDS:

@@ -1,6 +1,7 @@
 """Themes (`cliprender --theme`): loading, the Art of Intelligence cards, captions, labels and
 the horizon wipe. No media tools needed."""
 
+import codecs
 import json
 from fractions import Fraction
 
@@ -197,6 +198,62 @@ def test_balanced_titles_keep_their_rows_and_words():
         assert max(widths) - min(widths) <= max(face.getlength(row) for row in greedy) - min(
             face.getlength(row) for row in greedy
         )
+
+
+# Frames whose short edge is not 1080: tile sizes then have fractional parts (review of
+# PR #47: the episode chip's gradient and shape came out a pixel apart and Pillow refused to
+# combine them), and tiny ones push the fit loop and the progress bar to their limits.
+ODD_FRAMES = [
+    (606, 1080),
+    (854, 480),
+    (640, 360),
+    (1366, 768),
+    (1280, 800),
+    (1440, 900),
+    (321, 181),
+    (200, 100),
+    (160, 90),
+]
+
+
+@pytest.mark.parametrize("size", ODD_FRAMES)
+@pytest.mark.parametrize("kind", KINDS)
+def test_odd_and_tiny_frames_draw_every_kind_with_an_episode(size, kind):
+    image = aoi.draw_card(card(kind), size, VALUES)
+    assert image.size == size
+
+
+def test_a_tiny_frame_with_many_chapters_still_draws_its_progress_bar():
+    many = Card("A title", ("A line",), kind="chapter", chapter=(30, 60), at=Fraction(10))
+    assert aoi.draw_card(many, (160, 90), VALUES).size == (160, 90)
+
+
+def test_a_theme_file_saved_with_a_bom_loads(tmp_path):
+    path = tmp_path / "theme.json"
+    path.write_bytes(codecs.BOM_UTF8 + json.dumps({"theme": "aoi", "episode": "04"}).encode())
+    assert load_theme(str(path)).name == "aoi"
+
+
+def test_the_episode_chip_bug_and_qr_url_are_recorded_where_they_are_drawn():
+    url = "https://github.com/kyletabor/video-editor-bot"
+    with aoi.recording() as drawn:
+        aoi.draw_card(card("section", title="Get it", lines=(), qr=url), (1920, 1080), VALUES)
+        aoi.draw_card(card("intro", title="Intro", lines=()), (1920, 1080), VALUES)
+    texts = [run.text for run in drawn]
+    assert "".join(text for text in texts if text in url) == url
+    assert texts.count("04") == 2 and "AOI" in texts
+    for run in drawn:
+        if run.text in ("04", "AOI"):
+            left, top, right, bottom = run.box
+            # Card coordinates, not the tile's: past the margin and below the header.
+            assert left >= 96 and top > 100 and right <= 1920 and bottom <= 1080, run
+
+
+def test_a_transparent_picture_sits_on_the_theme_navy(tmp_path):
+    path = tmp_path / "clear.png"
+    Image.new("RGBA", (100, 100), (255, 255, 255, 0)).save(path)
+    image = aoi.draw_card(card("chapter", title="A", lines=(), image=path), (1920, 1080), VALUES)
+    assert image.getpixel((1464, 572)) == pytest.approx(aoi.NAVY_900, abs=3)
 
 
 @pytest.fixture

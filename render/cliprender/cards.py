@@ -363,11 +363,12 @@ def draw_card(card, size):
     return image
 
 
-def open_picture(path):
+def open_picture(path, background=BACKGROUND):
     """The card image as RGB, or a RenderError naming the file.
 
-    A transparent PNG is flattened onto the card background, so its empty areas read as part
-    of the slide rather than as black. Only PNG and JPEG are accepted, as the contract says.
+    A transparent PNG is flattened onto `background` (the card's), so its empty areas read as
+    part of the slide rather than as black. Only PNG and JPEG are accepted, as the contract
+    says.
     """
     try:
         with Image.open(path) as source:
@@ -376,7 +377,7 @@ def open_picture(path):
             source.load()
             if source.mode in ("RGBA", "LA") or "transparency" in source.info:
                 rgba = source.convert("RGBA")
-                flat = Image.new("RGB", rgba.size, BACKGROUND)
+                flat = Image.new("RGB", rgba.size, background)
                 flat.paste(rgba, mask=rgba.getchannel("A"))
                 return flat
             return source.convert("RGB")
@@ -407,9 +408,9 @@ def fit_box(size, box):
     return x, y, fitted[0], fitted[1]
 
 
-def draw_image(canvas, path, box):
+def draw_image(canvas, path, box, background=BACKGROUND):
     """Paste the card image scaled to fit `box` (inside a 2 px border), never cropped."""
-    picture = open_picture(path)
+    picture = open_picture(path, background)
     border = 2
     inner = (box[0] + border, box[1] + border, box[2] - border, box[3] - border)
     x, y, width, height = fit_box(picture.size, inner)

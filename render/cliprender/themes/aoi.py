@@ -64,8 +64,6 @@ AMBER = (245, 166, 35)  # #f5a623
 ORANGE = (232, 89, 12)  # #e8590c
 # The 4 px horizon band, left to right: orange, amber at 45 %, sun.
 HORIZON = ((0.0, ORANGE), (0.45, AMBER), (1.0, SUN))
-# Display text in the sun gradient (92deg, about left to right).
-SUNLIGHT = ((0.0, SUN), (1.0, ORANGE))
 # Grid lines: rgba(157,179,201,.16) on a layer at 50 % opacity.
 GRID_ALPHA = round(255 * 0.16 * 0.5)
 GRID_STEP = 64
@@ -160,6 +158,12 @@ def scale_of(size):
     return min(size) / 1080
 
 
+def pixels(length):
+    """A tile length in whole pixels; every tile helper rounds the same way, so a gradient
+    and the shape that masks it always come out the same size."""
+    return max(1, round(length))
+
+
 def blend(stops, position):
     """The colour at `position` (0..1) along gradient `stops`."""
     position = min(1.0, max(0.0, position))
@@ -172,7 +176,7 @@ def blend(stops, position):
 
 def hgradient(width, height, stops):
     """An RGB image `width` x `height` running through `stops` from left to right."""
-    width, height = max(1, int(width)), max(1, int(height))
+    width, height = pixels(width), pixels(height)
     row = Image.new("RGB", (width, 1))
     row.putdata([blend(stops, x / max(1, width - 1)) for x in range(width)])
     return row.resize((width, height), Image.Resampling.NEAREST)
@@ -180,7 +184,7 @@ def hgradient(width, height, stops):
 
 def diagonal_gradient(width, height, start, end):
     """`start` at the top left to `end` at the bottom right (CSS 135deg)."""
-    width, height = max(1, int(width)), max(1, int(height))
+    width, height = pixels(width), pixels(height)
     down = Image.linear_gradient("L")  # 0 at the top, 255 at the bottom
     across = down.transpose(Image.Transpose.TRANSPOSE)  # 0 at the left, 255 at the right
     mask = ImageChops.add(across.resize((width, height)), down.resize((width, height)), scale=2)
@@ -261,9 +265,9 @@ def supersampled(width, height, paint):
     """An RGBA tile `width` x `height` painted by `paint(draw, factor)` at SUPERSAMPLE times
     the size and scaled down, so curves and rounded corners come out anti-aliased."""
     factor = SUPERSAMPLE
-    big = Image.new("RGBA", (max(1, round(width * factor)), max(1, round(height * factor))))
+    big = Image.new("RGBA", (pixels(width * factor), pixels(height * factor)))
     paint(ImageDraw.Draw(big), factor)
-    return big.resize((max(1, round(width)), max(1, round(height))), Image.Resampling.LANCZOS)
+    return big.resize((pixels(width), pixels(height)), Image.Resampling.LANCZOS)
 
 
 def sun_mark(side):
@@ -344,6 +348,16 @@ def _record(x, baseline, text, face, tracking):
     )
 
 
+def note(text, box, offset=(0, 0)):
+    """Record text drawn on a tile, with its `box` on the tile moved by `offset`, the tile's
+    place on the card."""
+    if _drawn is None:
+        return
+    dx, dy = offset
+    left, top, right, bottom = box
+    _drawn.append(Drawn(text, (left + dx, top + dy, right + dx, bottom + dy)))
+
+
 def _letters(draw, x, baseline, text, face, fill, tracking):
     if not tracking:
         draw.text((x, baseline), text, font=face, fill=fill, anchor="ls")
@@ -407,8 +421,8 @@ def rule(image, x0, y0, x1, thickness, glow):
 def chip(text, face, pad_x, pad_y, radius):
     """The episode chip: dark mono numerals on the sun gradient, rounded."""
     ascent, descent = face.getmetrics()
-    width = width_of(face, text) + 2 * pad_x
-    height = ascent + descent + 2 * pad_y
+    width = pixels(width_of(face, text) + 2 * pad_x)
+    height = pixels(ascent + descent + 2 * pad_y)
     fill = diagonal_gradient(width, height, SUN, ORANGE).convert("RGBA")
     shape = supersampled(
         width,
@@ -418,12 +432,13 @@ def chip(text, face, pad_x, pad_y, radius):
         ),
     )
     fill.putalpha(shape.getchannel("A"))
-    put(ImageDraw.Draw(fill), pad_x, pad_y + ascent, text, face, NAVY_900)
+    _letters(ImageDraw.Draw(fill), pad_x, pad_y + ascent, text, face, NAVY_900, 0.0)
     return fill
 
 
 def bug(values, scale):
-    """The episode bug: a navy pill with the sun mark, AOI and the episode chip."""
+    """The episode bug: a navy pill with the sun mark, AOI and the episode chip. Returns the
+    pill and its texts with their boxes on it, for `note`."""
     mark = sun_mark(40 * scale)
     label = font("mono_bold", 22 * scale)
     tracking = 0.2 * 22 * scale
@@ -450,14 +465,19 @@ def bug(values, scale):
 
     pill = supersampled(width, height, paint)
     x = round(14 * scale)
-    pill.alpha_composite(mark, (x, round((height - mark.height) / 2)))
+    composite(pill, mark, (x, (height - mark.height) / 2))
     x += mark.width + gap
     ascent, descent = label.getmetrics()
-    put(ImageDraw.Draw(pill), x, (height + ascent - descent) / 2, "AOI", label, INK, tracking)
+    baseline = (height + ascent - descent) / 2
+    _letters(ImageDraw.Draw(pill), x, baseline, "AOI", label, INK, tracking)
+    _, top, _, bottom = label.getbbox("AOI", anchor="ls")
+    texts = [("AOI", (x, baseline + top, x + width_of(label, "AOI", tracking), baseline + bottom))]
     if number is not None:
         x += width_of(label, "AOI", tracking) + gap
-        pill.alpha_composite(number, (round(x), round((height - number.height) / 2)))
-    return pill
+        y = (height - number.height) / 2
+        composite(pill, number, (x, y))
+        texts.append((values.episode, (x, y, x + number.width, y + number.height)))
+    return pill, texts
 
 
 def header(image, values, right, scale, margin):
@@ -546,9 +566,10 @@ def progress(image, x, y, width, chapter, scale):
             draw = ImageDraw.Draw(image)
             continue
         fill = SUN if k < index else EDGE
+        right = max(round(left), round(left + segment) - 1)
         draw.rounded_rectangle(
-            (round(left), round(y), round(left + segment) - 1, round(y + height) - 1),
-            radius=height / 2,
+            (round(left), round(y), right, round(y + height) - 1),
+            radius=min(height / 2, (right - round(left)) / 2),
             fill=fill,
         )
 
@@ -596,15 +617,19 @@ def fit_text_block(
         body = sum(len(rows) for rows in l_rows) * line_size * SHRINK_STEPS[l_index] * line_leading
         return fixed + title_h + body
 
-    while height() > available and (t_index < last or l_index < last):
-        if lines and l_index < last and (l_index - t_index < 2 or t_index == last):
+    while height() > available:
+        lines_can = bool(lines) and l_index < last
+        title_can = t_index < last
+        if lines_can and (l_index - t_index < 2 or not title_can):
             l_index, l_face, l_rows = fit_block(
                 lines, line_size, column, MAX_ROWS_PER_LINE, l_index + 1, loader(line_role)
             )
-        else:
+        elif title_can:
             t_index, t_face, t_rows = fit_block(
                 [title], title_size, column, MAX_TITLE_ROWS, t_index + 1, loader(title_role)
             )
+        else:
+            break
     return (
         t_face,
         balance(t_rows[0], t_face, column),
@@ -663,11 +688,22 @@ def picture_box(card, size, margin, top, bottom):
 
 
 def draw_picture(image, card, box, scale):
+    """The card's picture in `box`, as the default look draws it (cards.py), except that a
+    transparent image is flattened onto the theme's navy rather than the default grey."""
+    left, top, right, bottom = box
+    box = (left, top, max(right, left + 2), max(bottom, top + 2))
     rgb = image.convert("RGB")
     if card.image is not None:
-        draw_image(rgb, card.image, box)
+        draw_image(rgb, card.image, box, background=NAVY_900)
     else:
-        draw_qr(rgb, qr_placement(card.qr, box, scale))
+        place = qr_placement(card.qr, box, scale)
+        draw_qr(rgb, place)
+        y = place.url_y
+        centre = place.x + place.side / 2
+        for row in place.url_rows:
+            x = centre - place.url_font.getlength(row) / 2
+            note(row, place.url_font.getbbox(row), (x, y))
+            y += place.url_step
     image.paste(rgb.convert("RGBA"))
 
 
@@ -792,6 +828,7 @@ def title_card(card, size, values):
     rows_top = y
     if number is not None:
         composite(image, number, (margin, y))
+        note(values.episode, (0, 0, number.width, number.height), (margin, y))
         x = margin + number.width + 24 * scale
         # Centre a one-row title on the chip; longer titles hang from its top.
         if len(t_rows) == 1:
@@ -831,7 +868,7 @@ def slide(card, size, values):
         counter = f"CHAPTER {index:02d} / {count:02d}"
         kicker_height = counter_face.size * 1.2 + 18 * scale + 5 * scale
     else:
-        pill = bug(values, scale)
+        pill, pill_texts = bug(values, scale)
         kicker_height = pill.height
     gap_after_kicker = 44 * scale
     rule_block = 36 * scale + 4 * scale + 36 * scale
@@ -861,6 +898,8 @@ def slide(card, size, values):
         draw = ImageDraw.Draw(image)
     else:
         composite(image, pill, (margin, y))
+        for text, text_box in pill_texts:
+            note(text, text_box, (margin, y))
     y += kicker_height + gap_after_kicker
 
     baseline = y + first_baseline(t_face, t_step)

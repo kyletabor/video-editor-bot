@@ -68,7 +68,7 @@ def load_theme(spec, root=None):
                 f"Unknown theme {text!r}: use one of {', '.join(THEMES)} or a theme JSON file"
             )
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RenderError(f"Cannot read theme file {path}: {exc}") from exc
         if not isinstance(data, dict) or data.get("theme") not in THEMES:
