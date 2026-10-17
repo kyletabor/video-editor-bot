@@ -3,16 +3,19 @@ the horizon wipe. No media tools needed."""
 
 import codecs
 import json
+import shutil
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 from PIL import Image
 from test_cards import FRAMES, LONG_LINES, LONG_WORD_TITLE
 
 from cliprender.cards import Card, draw_card, wrap, write_card_png
-from cliprender.media import RenderError
+from cliprender.media import RenderError, Tools
 from cliprender.overlays import LabelLook, Run, format_ass
 from cliprender.reel import timeline
+from cliprender.renderer import render_plan
 from cliprender.themes import THEMES, Theme, aoi, load_theme
 
 KINDS = ("intro", "opening", "section", "chapter", "closing", "outro")
@@ -302,3 +305,27 @@ def test_wipe_eases_on_the_series_curve(wipe):
     assert wipe.ease(0.5) == pytest.approx(0.5, abs=1e-3)
     # Slow out of the start, slow into the end: cubic-bezier(0.6, 0, 0.4, 1).
     assert wipe.ease(0.25) < 0.25 and wipe.ease(0.75) > 0.75
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="Needs FFmpeg and ffprobe on PATH",
+)
+def test_a_card_the_theme_cannot_draw_fails_the_run_before_any_encode(tmp_path, monkeypatch):
+    """render_plan draws a themed reel's cards before the clips' encodes, so a card that
+    cannot be drawn costs a probe, not a render."""
+    root = Path(__file__).resolve().parents[2]
+    plan = json.loads((root / "contract/examples/reel-story-v14.json").read_text(encoding="utf-8"))
+    plan["output"]["dir"] = str(tmp_path / "out")
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    encodes = []
+    monkeypatch.setattr(Tools, "encode", lambda self, *args, **kwargs: encodes.append(args))
+
+    def broken(card, size):
+        raise ValueError("no room for this card")
+
+    with pytest.raises(RenderError, match="cannot draw card 'Demo clip"):
+        render_plan(path, root=root, theme=Theme("broken", broken))
+    assert encodes == []
+    assert not any((tmp_path / "out").glob("*.mp4"))
