@@ -324,8 +324,18 @@ filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
   peak of every clip is measured with `astats`, which reads the decoder's floats
   (`volumedetect` histograms 16-bit samples, so an over is clipped to 0 dB before it
   is counted and can never be seen). Music and speech only coincide under
-  `under: all` and across a dissolve; only then, if speech peak plus music level
-  would pass −1 dBFS, is the whole mix lowered by the shortfall, with a warning.
+  `under: all` (the bed at `duck_db` beneath every clip) and during the bridges of
+  an overlapping transition (a dissolve or a module transition); only there, if
+  the speech peak plus the music would pass −1 dBFS, is the whole mix lowered by
+  the shortfall, with a warning. A bridge is bounded by what it holds
+  (`bridge_bounds`), read from the float WAVs once the bridges and bed stretches
+  exist: the peak of the bridge's own audio (the speech after the cross-fade) plus
+  the peak of every bed stretch over exactly the samples `mix_music` adds to it,
+  levels and edge fades included. A bridge with silence under it, such as the
+  chapter cards a `music_at: ends` score leaves quiet, adds nothing. Why per
+  bridge: counting the loudest clip's peak under the bed at full `gain_db` at every
+  join lowered the Talk #4 reel (Meet speech at −0.1 dBFS, cues at −4.5 dB, a
+  horizon wipe) by 5 dB, though its two music bridges peak at 0.65 of full scale.
   Speech that plays alone is never touched, however hot the recording is.
 - **Verification**: a v1.2 reel is additionally decoded with `astats` before the
   usual full `-xerror` decode: the sample count must match the expected length

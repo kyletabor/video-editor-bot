@@ -31,6 +31,8 @@ instead of `xfade`.
 from __future__ import annotations
 
 import math
+import sys
+from array import array
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -606,6 +608,37 @@ def join_wavs(paths, output):
     return sum(layout[3] for layout in layouts)
 
 
+# WAVE_FORMAT_IEEE_FLOAT, and WAVE_FORMAT_EXTENSIBLE, whose subformat GUID then names the codec.
+FLOAT_TAG, EXTENSIBLE_TAG = 3, 0xFFFE
+
+
+def wav_peak(path, first=0, last=None):
+    """Largest absolute sample of a float WAV over its sample frames `first` to `last`, every
+    channel; 0.0 when they are all silent or the range is empty.
+
+    Read here rather than with `astats` for the reason the join is (`join_wavs`): the reel's
+    working audio is float PCM, so its peak is exact in the renderer, costs no FFmpeg process,
+    and is the same on FFmpeg 4.4 and 7. Only the range is read, a bridge's worth at most.
+    """
+    fmt, offset, _, frames = wav_layout(path)
+    tag = int.from_bytes(fmt[0:2], "little")
+    if tag == EXTENSIBLE_TAG and len(fmt) >= 26:
+        tag = int.from_bytes(fmt[24:26], "little")
+    if tag != FLOAT_TAG or int.from_bytes(fmt[14:16], "little") != 32:
+        raise RenderError(f"{path.name} is not 32-bit float PCM")
+    block = int.from_bytes(fmt[12:14], "little")
+    last = frames if last is None else min(last, frames)
+    if last <= first:
+        return 0.0
+    samples = array("f")
+    with open(path, "rb") as handle:
+        handle.seek(offset + first * block)
+        samples.frombytes(handle.read((last - first) * block))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return max(map(abs, samples), default=0.0)
+
+
 def wav_seconds(data):
     """Exact length of a staged WAV: its sample count over its rate."""
     stream = next(s for s in data["streams"] if s["codec_type"] == "audio")
@@ -620,7 +653,8 @@ def stage_bed(tools, music, workspace, audio, needed):
     Why a WAV first: mp3 and ogg frames carry encoder delay and padding, so looping the
     compressed file seams with a gap, and its probed duration is approximate. A WAV loops
     sample-exactly with `-stream_loop`, its length is exact, and the 16-bit conversion bounds
-    the bed at full scale, so `headroom_gain` needs no measurement of it. The first pass is
+    the bed at full scale, so `headroom_gain` needs no measurement of it where it plays on its
+    own (only `bridge_bounds` reads what it holds under a join). The first pass is
     bounded by `-t`, so a long bed is never decoded further than the reel needs.
     """
     rate, channels = int(audio["sample_rate"]), int(audio["channels"])
@@ -690,18 +724,24 @@ class Mix:
         return max(0.0, linear_to_db(self.speech_peak * self.gain)) + PEAK_SLACK_DB
 
 
-def headroom_gain(tools, style, clips):
+def headroom_gain(tools, style, clips, bridges=None):
     """Gain that keeps the worst-case speech-plus-music peak HEADROOM_DB below full scale.
 
     Why arithmetic instead of a limiter: FFmpeg 4.4's `alimiter` delays the audio by its
     look-ahead and never flushes it (the `latency` option is 5.1+), so it would shift every
     reel by 5 ms and drop the tail on the Pi. The bed is bounded at full scale by its 16-bit
     staging, so its peak is at most its level; the speech peak is measured on each clip. The
-    two only coincide under `under: all` (bed at `duck`) or across a dissolve (the speech tail
-    over a card's music); only then can the mix exceed what the speech already was, and if
-    that sum would pass the target the whole mix is lowered by the shortfall with a warning.
-    Speech that plays alone is never touched, however hot the recording is: a v1.1 reel would
-    have carried it as is.
+    two only coincide under `under: all` (bed at `duck` beneath every clip) or during the
+    bridges of an overlapping transition (the speech tail over a card's music); only there can
+    the mix exceed what the speech already was, and if that sum would pass the target the
+    whole mix is lowered by the shortfall with a warning. Speech that plays alone is never
+    touched, however hot the recording is: a v1.1 reel would have carried it as is.
+
+    `bridges` holds the measured bound of every bridge with music under it (`bridge_bounds`):
+    the speech inside that join after its cross-fade plus the bed actually heard there. So a
+    join next to a card the score left quiet adds nothing, and neither does a loud word
+    elsewhere in the clip. None means the bridges were not measured, and every join is then
+    taken at the worst case: the loudest clip's peak under the bed at full `gain`.
     """
     music = style.music
     speech = 0.0
@@ -709,12 +749,11 @@ def headroom_gain(tools, style, clips):
         peak, _ = tools.audio_stats(path)
         if peak is not None:
             speech = max(speech, db_to_linear(peak))
-    with_speech = music.duck if music.under == "all" else 0.0
-    if style.transition in OVERLAPPING:
-        with_speech = max(with_speech, music.gain)
     bound = music.gain
-    if with_speech > 0:
-        bound = max(bound, speech + with_speech)
+    if music.under == "all":
+        bound = max(bound, speech + music.duck)
+    if style.transition in OVERLAPPING:
+        bound = max([bound, *([speech + music.gain] if bridges is None else bridges)])
     ceiling = db_to_linear(-HEADROOM_DB)
     if bound <= ceiling:
         return Mix(1.0, speech)
@@ -724,6 +763,28 @@ def headroom_gain(tools, style, clips):
         f"{HEADROOM_DB:g} dB below full scale"
     )
     return Mix(gain, speech)
+
+
+def bridge_bounds(workspace, bridges, beds):
+    """Linear bound on speech plus music during every bridge that has music under it.
+
+    A bridge's own WAV is the speech after the cross-fade (the outgoing tail fading out over
+    the incoming head fading in), so its peak is the speech heard during that join, not the
+    whole clip's. The music is what `mix_music` adds to the same segment: the samples of
+    every bed stretch that overlap it (`bed_overlaps`), with their level and edge fades. The
+    two peaks summed bound the mix whatever the phase. A bridge with silence under it (a card
+    run the score left quiet, a cue that has rung out) is skipped: there the speech plays
+    alone. Call it before `mix_music`, while each bridge's audio is still its own WAV.
+    """
+    bounds = []
+    for segment in bridges:
+        music = sum(
+            wav_peak(workspace / name, first, last)
+            for name, first, last, _ in bed_overlaps(segment, beds)
+        )
+        if music > 0:
+            bounds.append(wav_peak(workspace / segment.audio) + music)
+    return bounds
 
 
 def encode_piece(tools, workspace, name, inputs, graph, fps, cfr_flags, graph_flag, audio, ends):
@@ -828,20 +889,27 @@ def render_beds(tools, workspace, bed, pieces, audio, fade_seconds, graph_flag):
     return beds
 
 
+def bed_overlaps(segment, beds):
+    """(file name, first sample, last sample, delay) of every bed stretch heard during
+    `segment`: the samples of that file that play while it does, and where in it they begin.
+    `mix_music` mixes exactly these and `bridge_bounds` measures exactly these."""
+    end = segment.start + segment.samples
+    for name, first, last in beds:
+        low, high = max(segment.start, first), min(end, last)
+        if high > low:
+            yield name, low - first, high - first, low - segment.start
+
+
 def mix_music(tools, workspace, segments, beds, audio, graph_flag):
     """Mix into each segment the stretches of bed heard while it plays, one process per segment
     that has any: the segment plus at most the base stretch and one card run (`under: all`)."""
     channels = int(audio["channels"])
     for segment in segments:
-        end = segment.start + segment.samples
-        inputs, overlaps = [], []
-        for name, first, last in beds:
-            low, high = max(segment.start, first), min(end, last)
-            if high > low:
-                inputs += ["-i", name]
-                overlaps.append((len(overlaps) + 1, low - first, high - first, low - segment.start))
-        if not overlaps:
+        heard = list(bed_overlaps(segment, beds))
+        if not heard:
             continue
+        inputs = [word for name, *_ in heard for word in ("-i", name)]
+        overlaps = [(k, *stretch) for k, (_, *stretch) in enumerate(heard, 1)]
         script = workspace / f"{segment.name}-mix.txt"
         script.write_text(mix_graph(overlaps, channels), encoding="utf-8")
         mixed = f"{segment.name}-mix.wav"
@@ -927,8 +995,6 @@ def render_reel(
         if pieces:
             needed = max(piece.offset + piece.seconds for piece in pieces)
             bed = stage_bed(tools, style.music, workspace, audio, needed)
-            speech = [rendered[item][0] for item in items if not isinstance(item, Card)]
-            mix = headroom_gain(tools, style, speech)
         else:
             warn("music is set but the reel has no cards to play it under")
     beds = []
@@ -936,7 +1002,7 @@ def render_reel(
         beds = render_beds(
             tools, workspace, bed, pieces, audio, style.music.fade_seconds, graph_flag
         )
-    segments = []
+    segments, bridges = [], []
     last = len(sources) - 1
     for k, (inputs, audio_input) in enumerate(sources):
         head = (bridge, bridge_samples) if k else (0, 0)
@@ -980,7 +1046,8 @@ def render_reel(
                 module=module,
                 draw=draw,
             )
-            segments.append(Segment(joint, bridge, bridge_samples))
+            bridges.append(Segment(joint, bridge, bridge_samples))
+            segments.append(bridges[-1])
         segments.append(
             Segment(name, frames[k] - head[0] - tail[0], samples[k] - head[1] - tail[1])
         )
@@ -989,6 +1056,10 @@ def render_reel(
         segment.start = position
         position += segment.samples
     if beds:
+        # The gain is applied only in the final encode, so it is decided here, once the
+        # bridges and the bed stretches exist and the bound can read what each join holds.
+        speech = [rendered[item][0] for item in items if not isinstance(item, Card)]
+        mix = headroom_gain(tools, style, speech, bridge_bounds(workspace, bridges, beds))
         mix_music(tools, workspace, segments, beds, audio, graph_flag)
     script = workspace / "reel.txt"
     script.write_text(concat_list(segments, fps), encoding="utf-8")
