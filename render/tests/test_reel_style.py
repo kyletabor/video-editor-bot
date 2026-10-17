@@ -293,7 +293,7 @@ def test_headroom_gain_only_lowers_a_mix_that_could_clip(capsys):
     assert mix.gain == pytest.approx(expected)
     assert mix.ceiling_db == PEAK_SLACK_DB
     assert "lowered by" in capsys.readouterr().err
-    # A dissolve overlaps the speech tail with a card's music at full `gain`.
+    # Unmeasured bridges are taken at their worst: the speech peak under a card's music at `gain`.
     mix = headroom_gain(FakeTools({"a": -0.5}), Style("dissolve", music=Music(Path("bed"))), ["a"])
     expected = 10 ** (-HEADROOM_DB / 20) / (10 ** (-0.5 / 20) + 10 ** (-18 / 20))
     assert mix.gain == pytest.approx(expected)
