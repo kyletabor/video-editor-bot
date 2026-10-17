@@ -1,8 +1,9 @@
 """The clipping guard of a reel with an overlapping transition: what each bridge holds.
 
-Speech and music only sound together during the bridges of a dissolve or a module transition,
-so the bound reads each bridge: the speech after the cross-fade plus the bed heard under it.
-The unit tests pin the arithmetic (`wav_peak`, `bridge_bounds`, `headroom_gain`); the reels
+Speech and music only sound together during the bridges of a dissolve or a module transition
+(and a sample or few of a clip body at 29.97 fps), so the bound reads what each holds: the
+speech after the cross-fade plus the bed heard there. The unit tests pin the arithmetic
+(`wav_peak`, `music_bounds`, `headroom_gain`); the reels
 go through the real CLI with the layout the bot scores with `music_at: ends` (music under the
 first and last card runs, silence under the chapter card between the clips).
 
@@ -17,6 +18,7 @@ so card B's bridge into clip B carries the loudest speech of the reel, and the o
 import json
 import math
 import struct
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -32,8 +34,12 @@ from cliprender.reel import (
     Music,
     Segment,
     Style,
-    bridge_bounds,
+    frame_count,
     headroom_gain,
+    music_bounds,
+    music_pieces,
+    sample_count,
+    transition_frames,
     wav_peak,
 )
 
@@ -76,29 +82,63 @@ def test_wav_peak_reads_the_largest_sample_of_a_range_on_every_channel(tmp_path)
         wav_peak(tmp_path / "int.wav")
 
 
-def test_bridge_bounds_add_the_bed_under_each_bridge_and_skip_the_silent_ones(tmp_path):
+def test_music_bounds_add_the_bed_heard_over_each_bridge_and_skip_silence(tmp_path):
     def write(name, values):
         float_wav(tmp_path / name, [(v, -v) for v in values])
 
     write("bridge-00.wav", [0.1, 0.6, 0.2, 0.0])
     write("bridge-01.wav", [0.0, 0.95, 0.5, 0.1])
-    # Run one plays at reel samples 0-20 and is loud before the first bridge (10-14), which
-    # must not count; run two plays at 26-40 and is silent where the second bridge (30-34) is.
-    write("bed-00.wav", [0.0] * 5 + [0.9] + [0.0] * 4 + [0.3, 0.2, 0.1, 0.05] + [0.0] * 6)
-    write("bed-01.wav", [0.0] * 14)
+    write("piece-02.wav", [0.4] * 6)
+    # Run one plays at reel samples 0-20, the first bridge at 10-14; run two at 26-40, silent
+    # where the second bridge (30-34) is. Both are loud one sample outside each window, so a
+    # window one sample early or wide would show.
+    bed = [0.0] * 20
+    bed[5], bed[9], bed[10:14], bed[14], bed[19] = 0.9, 0.8, [0.3, 0.2, 0.1, 0.05], 0.7, 0.6
+    write("bed-00.wav", bed)
+    write("bed-01.wav", [0.5, 0.0, 0.0, 0.45, 0.0, 0.0, 0.0, 0.0, 0.4] + [0.3] * 5)
     bridges = [Segment("bridge-00", 4, 4, start=10), Segment("bridge-01", 4, 4, start=30)]
     beds = [("bed-00.wav", 0, 20), ("bed-01.wav", 26, 40)]
-    assert bridge_bounds(tmp_path, bridges, beds) == [pytest.approx(0.6 + 0.3)]
-    # `under: all`: the base stretch under the whole reel adds to both, and so the second
+    assert music_bounds(tmp_path, bridges, beds) == [pytest.approx(0.6 + 0.3)]
+    # A segment between the runs (20-26) touches both and hears neither.
+    between = Segment("piece-02", 6, 6, start=20)
+    assert music_bounds(tmp_path, [between], beds) == []
+    # `under: all`: the base stretch under the whole reel adds to all three, so the second
     # bridge counts, at its own speech peak plus that base.
     write("bed-base.wav", [0.05] * 40)
     beds.insert(0, ("bed-base.wav", 0, 40))
-    assert bridge_bounds(tmp_path, bridges, beds) == [
+    assert music_bounds(tmp_path, [*bridges, between], beds) == [
         pytest.approx(0.6 + 0.05 + 0.3),
         pytest.approx(0.95 + 0.05),
+        pytest.approx(0.4 + 0.05),
     ]
-    # A bridge that ends where a run starts hears none of it.
-    assert bridge_bounds(tmp_path, [Segment("bridge-00", 4, 4, start=22)], beds[1:]) == []
+
+
+def test_at_29_97_fps_a_card_runs_music_starts_a_sample_inside_the_clip_before_it():
+    """Why `music_bounds` reads the clip bodies as well as the bridges (veb-47p): a run's
+    stretch is placed by rounding its start in seconds, the segments by whole-sample lengths.
+    The layout is Talk #4's opening: intro, opening card, card A, clip A, card B, clip B."""
+    durations = [Fraction(4), Fraction("7.5"), Fraction(3), Fraction("40.45")]
+    durations += [Fraction(3), Fraction("52.45")]
+    cards = [True, True, True, False, True, False]
+    for fps, early in ((Fraction(24), 0), (Fraction(30), 0), (Fraction(30000, 1001), 1)):
+        frames = [frame_count(seconds, fps) for seconds in durations]
+        samples = [sample_count(count, fps, RATE) for count in frames]
+        bridge = transition_frames(Fraction("0.4"), fps, frames)
+        lengths = [Fraction(count) / fps for count in frames]
+        run = music_pieces(Music(Path("bed")), lengths, cards, Fraction(bridge) / fps)[1]
+        # Clip A's body ends, and its bridge into card B starts, after the first four pieces
+        # less one bridge each.
+        joint = sum(samples[:4]) - 4 * sample_count(bridge, fps, RATE)
+        assert joint - round(run.start * RATE) == early
+
+
+def test_music_bounds_count_the_samples_a_run_reaches_into_a_clip_body(tmp_path):
+    # Clip A's body (reel samples 100-110) is hot at its third sample; card B's run starts a
+    # sample early, at 109, with an unfaded cue onset (cue styles set `fade_seconds: 0`).
+    float_wav(tmp_path / "piece-03.wav", [(v, v) for v in [0.2, 0.2, 0.95] + [0.2] * 6 + [0.3]])
+    float_wav(tmp_path / "bed-01.wav", [(0.6, 0.6)] * 11)
+    body = Segment("piece-03", 10, 10, start=100)
+    assert music_bounds(tmp_path, [body], [("bed-01.wav", 109, 120)]) == [pytest.approx(0.9)]
 
 
 class Peaks:
