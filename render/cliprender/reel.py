@@ -35,6 +35,7 @@ import sys
 from array import array
 from dataclasses import dataclass
 from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 
 from .cards import Card, chapter_footer, write_card_png
@@ -778,12 +779,14 @@ def music_bounds(workspace, segments, beds):
     segments by summing whole-sample piece lengths, and at a rate with no whole number of
     samples per frame (29.97 fps at 48 kHz) the two disagree at a run's edges (veb-47p).
 
-    For every stretch heard during a segment (`bed_overlaps`: the samples `mix_music` adds),
-    the bound over the samples it covers is the speech peak there, from the segment's own WAV
-    (for a bridge, the speech after the cross-fade, not the whole clip's), plus the peaks of
-    every stretch over those same samples, with their levels and edge fades. The peaks summed
-    bound the mix whatever the phase. Silence under a stretch (a card run the score left
-    quiet, a cue that has rung out) adds nothing: there the speech plays alone. Call it before
+    The stretches heard during a segment (`bed_overlaps`: the samples `mix_music` adds) split
+    it at their edges into windows, each under a fixed set of them. The bound over a window is
+    the speech peak there, from the segment's own WAV (for a bridge, the speech after the
+    cross-fade, not the whole clip's), plus the peaks of the stretches over it, with their
+    levels and edge fades. The peaks summed bound the mix whatever the phase, and splitting at
+    the edges keeps a sample's worth of a cue onset from being added to a loud word elsewhere
+    in a clip under `under: all`. Silence under a window (a card run the score left quiet, a
+    cue that has rung out) adds nothing: there the speech plays alone. Call it before
     `mix_music`, while each segment's audio is still its own WAV.
     """
     bounds = []
@@ -793,11 +796,12 @@ def music_bounds(workspace, segments, beds):
             (name, first - delay, delay, delay + last - first)
             for name, first, last, delay in bed_overlaps(segment, beds)
         ]
-        for low, high in sorted({(start, end) for _, _, start, end in heard}):
+        edges = sorted({edge for _, _, start, end in heard for edge in (start, end)})
+        for low, high in pairwise(edges):
             music = sum(
-                wav_peak(workspace / name, max(low, start) + shift, min(high, end) + shift)
+                wav_peak(workspace / name, low + shift, high + shift)
                 for name, shift, start, end in heard
-                if min(high, end) > max(low, start)
+                if start <= low and high <= end
             )
             if music > 0:
                 bounds.append(wav_peak(workspace / segment.audio, low, high) + music)
@@ -1076,8 +1080,8 @@ def render_reel(
         position += segment.samples
     if beds:
         # The gain is applied only in the final encode, so it is decided here, once the
-        # bridges and the bed stretches exist and the bound can read what each join holds.
-        # A cut or a dip keeps its rule (the music alone under the cards) sample for sample.
+        # bridges and the bed stretches exist and the bound can read what music plays over
+        # speech. A cut or a dip keeps its rule (the music alone under the cards) as it was.
         speech = [rendered[item][0] for item in items if not isinstance(item, Card)]
         measured = None
         if style.transition in OVERLAPPING:

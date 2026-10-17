@@ -3,9 +3,9 @@
 Speech and music only sound together during the bridges of a dissolve or a module transition
 (and a sample or few of a clip body at 29.97 fps), so the bound reads what each holds: the
 speech after the cross-fade plus the bed heard there. The unit tests pin the arithmetic
-(`wav_peak`, `music_bounds`, `headroom_gain`); the reels
-go through the real CLI with the layout the bot scores with `music_at: ends` (music under the
-first and last card runs, silence under the chapter card between the clips).
+(`wav_peak`, `music_bounds`, `headroom_gain`); the reels are rendered with the layout the
+bot scores with `music_at: ends` (music under the first and last card runs, silence under
+the chapter card between the clips) and with a bed under every card.
 
 The fixture reel is the music tests' one with a chapter card before clip B as well: intro 4,
 opening 5, card A 3, clip A 5, card B 3, clip B 5, closing 6 and outro 3 seconds at 10 fps, a
@@ -22,11 +22,12 @@ from fractions import Fraction
 from pathlib import Path
 
 import pytest
-from test_integration import RATE, audio, cli, ffmpeg, rms
+from test_integration import RATE, ROOT, audio, cli, ffmpeg, rms
 from test_reel import rows
 from test_reel_module import needs_numpy
 from test_reel_music import music_plan, needs_tools, peak
 
+import cliprender.reel
 from cliprender.media import RenderError, Tools
 from cliprender.reel import (
     HEADROOM_DB,
@@ -42,6 +43,7 @@ from cliprender.reel import (
     transition_frames,
     wav_peak,
 )
+from cliprender.renderer import render_plan
 
 CEILING = 10 ** (-HEADROOM_DB / 20)
 
@@ -139,6 +141,14 @@ def test_music_bounds_count_the_samples_a_run_reaches_into_a_clip_body(tmp_path)
     float_wav(tmp_path / "bed-01.wav", [(0.6, 0.6)] * 11)
     body = Segment("piece-03", 10, 10, start=100)
     assert music_bounds(tmp_path, [body], [("bed-01.wav", 109, 120)]) == [pytest.approx(0.9)]
+    # `under: all`: the base stretch plays under the whole body too. The windows split at the
+    # run's edge, so the onset adds to the leaked sample's speech, not to the loud one.
+    float_wav(tmp_path / "bed-base.wav", [(0.05, 0.05)] * 200)
+    beds = [("bed-base.wav", 0, 200), ("bed-01.wav", 109, 120)]
+    assert music_bounds(tmp_path, [body], beds) == [
+        pytest.approx(0.95 + 0.05),
+        pytest.approx(0.3 + 0.05 + 0.6),
+    ]
 
 
 class Peaks:
@@ -211,9 +221,9 @@ def hot_talk(tmp_path_factory):
     return {"source": source, "beds": beds, "module": module}
 
 
-def headroom_reel(tmp_path, hot_talk, bed, kind):
-    """Render the fixture reel with `bed` under its cards at -4.5 dB and a 0.4 s `kind`
-    transition; return the CLI result, the reel and the published clips."""
+def headroom_plan(tmp_path, hot_talk, bed, kind):
+    """The fixture reel's plan with `bed` under its cards at -4.5 dB and a 0.4 s `kind`
+    transition, and its output folder."""
     talk = {"source": hot_talk["source"], "bed": hot_talk["beds"][bed]}
     plan, output = music_plan(tmp_path, talk, transition="dissolve")
     data = json.loads(plan.read_text(encoding="utf-8"))
@@ -227,6 +237,12 @@ def headroom_reel(tmp_path, hot_talk, bed, kind):
         }
     data["clips"][1]["card"] = {"title": "Chapter two", "lines": ["the second half"], "seconds": 3}
     plan.write_text(json.dumps(data), encoding="utf-8")
+    return plan, output
+
+
+def headroom_reel(tmp_path, hot_talk, bed, kind):
+    """Render that plan through the CLI; return the result, the reel and the published clips."""
+    plan, output = headroom_plan(tmp_path, hot_talk, bed, kind)
     result = cli(plan)
     assert [fields[0] for fields in rows(result)] == ["first", "second", "reel"]
     return result, output / "reel.mp4", [output / "first.mp4", output / "second.mp4"]
@@ -261,12 +277,28 @@ def test_music_at_the_ends_leaves_a_reel_with_overlapping_joins_at_full_level(
 @needs_tools
 @needs_numpy
 def test_a_bed_under_every_card_lowers_the_reel_only_as_far_as_its_loudest_bridge(
-    tmp_path, hot_talk
+    tmp_path, hot_talk, monkeypatch, capsys
 ):
-    result, reel, clips = headroom_reel(tmp_path, hot_talk, "cards", "module")
+    # In process, so the test can see what the renderer hands the bound.
+    plan, output = headroom_plan(tmp_path, hot_talk, "cards", "module")
+    measured, original = [], cliprender.reel.music_bounds
+
+    def record(workspace, segments, beds):
+        measured.extend(segment.name for segment in segments)
+        return original(workspace, segments, beds)
+
+    monkeypatch.setattr(cliprender.reel, "music_bounds", record)
+    records = render_plan(plan, root=ROOT)
+    assert [record[0] for record in records] == ["first", "second", "reel"]
+    reel, clips = output / "reel.mp4", [output / "first.mp4", output / "second.mp4"]
+    # Every segment that carries speech is measured: the seven bridges and both clip bodies
+    # (a run's music can reach into one, veb-47p), never the silent card bodies.
+    bridges = [f"bridge-{k:02d}" for k in range(7)]
+    assert measured == [*bridges[:3], "piece-03", *bridges[3:5], "piece-05", *bridges[5:]]
     # Card B's bridge into clip B now holds the hot word (0.98) under the last 0.4 s of card
     # B's music fading out over its second (at most 0.4 x 0.48): about 1.17, so 2.4 dB.
-    line = next(line for line in result.stderr.splitlines() if "lowered by" in line)
+    stderr = capsys.readouterr().err
+    line = next(line for line in stderr.splitlines() if "lowered by" in line)
     lowered = float(line.split("lowered by ")[1].split(" dB")[0])
     assert 1.9 < lowered < 2.9
     assert lowered < -20 * math.log10(worst_case(clips, "module")) - 2
