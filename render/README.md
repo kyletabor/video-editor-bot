@@ -338,7 +338,8 @@ filters that were measured to behave the same on FFmpeg 4.4.2 and 7.0.2:
   the chapter cards a `music_at: ends` score leaves quiet, adds nothing. Why
   measured: counting the loudest clip's peak under the bed at full `gain_db` at
   every join lowered the Talk #4 reel (Meet speech at −0.1 dBFS, cues at −4.5 dB, a
-  horizon wipe) by 5 dB, though its two music bridges peak at 0.65 of full scale.
+  horizon wipe) by 5 dB, though its two music bridges are bounded at 0.61 and 0.70
+  of full scale (and peak at 0.37 and 0.40).
   A cut or dip reel keeps the music alone under the cards as its bound. Speech
   that plays alone is never touched, however hot the recording is.
 - **Verification**: a v1.2 reel is additionally decoded with `astats` before the

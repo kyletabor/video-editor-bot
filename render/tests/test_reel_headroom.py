@@ -167,9 +167,9 @@ def test_headroom_gain_counts_only_the_bridges_that_carry_music(capsys):
     worst = headroom_gain(hot, style, ["a"])
     assert worst.gain == pytest.approx(CEILING / (10 ** (-0.1 / 20) + 10 ** (-4.5 / 20)))
     assert "lowered by 5.0 dB" in capsys.readouterr().err
-    # Measured: music only at the open and close, and those two bridges hold 0.63 and 0.65
-    # (quiet speech fading in or out under the cue); the chapter cards between are silent.
-    for bridges in ([], [0.63, 0.65]):
+    # Measured: music only at the open and close, and those two bridges are bounded at 0.61
+    # and 0.70 (quiet speech fading in or out under the cue); the chapter cards are silent.
+    for bridges in ([], [0.61, 0.70]):
         mix = headroom_gain(hot, style, ["a"], bridges)
         assert mix.gain == 1.0
         assert mix.ceiling_db == pytest.approx(PEAK_SLACK_DB)
