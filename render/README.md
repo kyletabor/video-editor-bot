@@ -452,9 +452,8 @@ series' cubic-bezier(0.6, 0, 0.4, 1)), is an ordinary v1.3 module transition: a 
 plan names it like any other (`{"kind": "module", "module":
 "render/cliprender/themes/horizon_wipe.py", "seconds": 0.6}`), so the bot, not the theme,
 decides whether a reel uses it. Like every overlapping join it lets a card's music sound over
-the first and last 0.6 s of speech, so a reel with music is lowered by the renderer's
-headroom rule (`reel.headroom_gain`, about 5 dB with the `pipeline` cues); `dip` keeps full
-level.
+the first and last 0.6 s of speech; the headroom rule (`reel.headroom_gain`, above) bounds
+each such join by what it holds, so the Talk #4 reel keeps the clips' level.
 
 ## Development and measured checks
 
