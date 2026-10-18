@@ -201,8 +201,9 @@ def _cut_summary(rep: cuts.CutReport) -> str:
 
 def cmd_reel(a: argparse.Namespace) -> int:
     minutes = a.minutes if a.minutes is not None else 4.0  # target is advisory
-    # The hand-written inputs are read first: a typo in any of them must not cost the
-    # transcription, the silence scan or the redaction below.
+    # The framing file, the style and the theme's name are read first: a typo in one of them must
+    # not cost the transcription, the silence scan or the redaction below. (A theme's own keys,
+    # such as aoi's episode, are cliprender's to check; it does so before its first encode.)
     # --framing FILE (framing.py) overrides the flags below wherever it says something; the
     # card seconds it sets are in place before the runtime line is computed.
     framing = framingmod.load_framing(a.framing) if a.framing else None
@@ -210,9 +211,13 @@ def cmd_reel(a: argparse.Namespace) -> int:
     # "style", and an explicit --music / --transition / framing transition beats the style.
     style_name = a.style or (framing.style if framing else None)
     style = stylesmod.load(style_name) if style_name else None
-    # A theme (themes.py) is the renderer's look; --theme beats the framing file's "theme".
-    theme_spec = a.theme or (framing.theme if framing else None)
-    theme = themesmod.resolve(theme_spec, "--theme" if a.theme else f"{a.framing}.theme") if theme_spec else None
+    # A theme (themes.py) is the renderer's look; --theme beats the framing file's "theme". An
+    # empty --theme (an unset shell variable) is an error, not "no theme".
+    if a.theme is not None:
+        theme_spec, where = themesmod.check_spec(a.theme, "--theme"), "--theme"
+    else:
+        theme_spec, where = (framing.theme if framing else None), f"{a.framing}.theme"
+    theme = themesmod.resolve(theme_spec, where) if theme_spec else None
     info = probemod.probe(a.source)
     out_path = Path(a.out)
     out_dir = out_path.parent

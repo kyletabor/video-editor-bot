@@ -4,23 +4,25 @@ A theme belongs to the renderer, not to the plan. The contract leaves the look o
 the renderer, so `cliprender --theme NAME|FILE` picks it at render time and the plan does not
 change (render/README.md, "Themes"). The bot passes it on, and adds two things:
 
-- It checks the theme before the slow steps (transcription, the silence scan, redaction), in
-  the renderer's order: a built-in name, else a theme file (as given, else from the
-  repository root), else an error. A theme file must be a JSON object whose "theme" is a
-  built-in name; the renderer checks that theme's own keys itself, before any encode.
+- It checks the theme's name before the slow steps (transcription, the silence scan,
+  redaction), in the renderer's order: a built-in name, else a theme file (as given, else from
+  the repository root), else an error. A theme file must be a JSON object whose "theme" is a
+  built-in name. That theme's own keys (aoi: an episode of up to 4 characters, a date of up
+  to 40) are the renderer's to judge; cliprender checks them before its first encode.
 - It records the theme next to the plan as `<plan>.theme.json`, in the renderer's theme-file
   form, `{"theme": "aoi", "episode": "04", "date": "Friday, October 9"}`. `--render` passes
   that copy, and a later `cliprender PLAN --theme <plan>.theme.json` renders the same look even
   if the original file has changed. A run without a theme removes an earlier record, so the
   outputs never name a look the plan was not made with.
 
-The built-in names are read from the renderer's checkout: each built-in theme is a module in
-render/cliprender/themes/ with a top-level `theme()` (cliprender/themes/__init__.py). Without a
-renderer next to the bot any name passes here and cliprender judges it.
+The built-in names are the renderer's own `THEMES` (render/cliprender/themes/__init__.py),
+read from its source rather than imported: the renderer is a separate project with its own
+dependencies. Without a renderer next to the bot any name passes here and cliprender judges it.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -30,12 +32,19 @@ THEMES_DIR = REPO_ROOT / "render" / "cliprender" / "themes"
 
 
 def builtin(themes_dir: Path | None = None) -> list[str]:
-    """The renderer's built-in theme names; empty when there is no renderer checkout."""
-    themes_dir = themes_dir or THEMES_DIR
-    if not themes_dir.is_dir():
+    """The renderer's built-in theme names, its own `THEMES`; empty without a renderer checkout."""
+    init = (themes_dir or THEMES_DIR) / "__init__.py"
+    try:
+        tree = ast.parse(init.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
         return []
-    return sorted(p.stem for p in themes_dir.glob("*.py")
-                  if not p.stem.startswith("_") and "\ndef theme(" in p.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and [getattr(t, "id", None) for t in node.targets] == ["THEMES"]:
+            try:
+                return sorted(ast.literal_eval(node.value))
+            except ValueError:
+                return []
+    return []
 
 
 def _check_name(name: str, where: str) -> None:

@@ -34,7 +34,8 @@ ffmpeg -y -i out/stank/theme.wav -c:a libmp3lame -b:a 192k assets/styles/pipelin
 
 The synth is seeded: the same code gives the same samples. If a block's length changes,
 update `seconds` in `pipeline/style.json` (a test compares the outro's stated length with the
-file) and the same block in `aoi/style.json` (a test checks the two styles play the same music). FLAC, not MP3, for the blocks: they are placed to the sample, and MP3 adds encoder
+file) and the same block in `aoi/style.json` (a test checks the two styles play the same
+music). FLAC, not MP3, for the blocks: they are placed to the sample, and MP3 adds encoder
 delay.
 
 **The theme is the series' identity. Change it only when Kyle asks.**

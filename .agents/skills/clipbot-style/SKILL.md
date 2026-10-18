@@ -36,7 +36,7 @@ uv run --project bot clipbot reel --source <file> --style aoi --theme out/<name>
 - The wipe overlaps each join, so a card's music sounds over the first and last 0.6 s of speech.
   The renderer keeps the clips' level (its headroom rule bounds each join by what it holds).
 - clipbot writes the theme beside the plan as `plan.theme.json`. A hand re-render must pass it:
-  `uv run --project render --extra styles cliprender out/<name>/plan.json --root . --theme out/<name>/plan.theme.json`.
+  `uv run --project render --extra styles cliprender out/<name>/plan.json --root . --overwrite --theme out/<name>/plan.theme.json`.
 
 ## Use a style
 

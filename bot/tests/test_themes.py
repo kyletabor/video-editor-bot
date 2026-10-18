@@ -1,7 +1,6 @@
 """Renderer themes from the bot (clipbot/themes.py): `clipbot reel --theme` and framing "theme"
 are checked first, recorded next to the plan, and passed to cliprender by --render."""
 
-import ast
 import json
 
 import pytest
@@ -14,18 +13,19 @@ from tests.test_reel import DEMO_MP4, needs_demo
 AOI_FILE = {"theme": "aoi", "episode": "04", "date": "Friday, October 9"}
 
 
-def test_builtin_names_are_the_renderers():
-    """The bot reads the names from the renderer's modules; they must be the renderer's THEMES."""
-    tree = ast.parse((REPO_ROOT / "render" / "cliprender" / "themes" / "__init__.py").read_text(encoding="utf-8"))
-    declared = next(ast.literal_eval(node.value) for node in tree.body
-                    if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "THEMES")
-    assert themes.builtin() == sorted(declared) and "aoi" in declared
+def test_builtin_names_are_the_renderers_themes(tmp_path):
+    """The names are the renderer's THEMES, read from its source; each is a module there."""
+    assert "aoi" in themes.builtin()
+    for name in themes.builtin():
+        assert (themes.THEMES_DIR / f"{name}.py").is_file()
+    (tmp_path / "__init__.py").write_text('"""no list here"""\nOTHER = ("x",)\n', encoding="utf-8")
+    assert themes.builtin(tmp_path) == []  # nothing to go by: any name passes, cliprender judges it
 
 
 def test_resolve_a_name_a_file_and_an_object(tmp_path, monkeypatch):
     assert themes.resolve("aoi") == {"theme": "aoi"}
     path = tmp_path / "theme.json"
-    path.write_text("﻿" + json.dumps(AOI_FILE), encoding="utf-8")  # a BOM, as Windows editors write
+    path.write_text("\ufeff" + json.dumps(AOI_FILE), encoding="utf-8")  # a BOM, as Windows editors write
     assert themes.resolve(str(path)) == AOI_FILE
     assert themes.resolve(dict(AOI_FILE)) == AOI_FILE
     # a relative path is looked for from the working directory, then from the repository root
@@ -86,6 +86,8 @@ def test_a_bad_theme_fails_before_the_source_is_even_read(tmp_path, capsys):
     out = tmp_path / "plan.json"
     rc = cli.main(["reel", "--source", str(tmp_path / "missing.mp4"), "--theme", "aio", "--out", str(out)])
     assert rc == 1 and "unknown theme 'aio'" in capsys.readouterr().err and not out.exists()
+    rc = cli.main(["reel", "--source", str(tmp_path / "missing.mp4"), "--theme", " ", "--out", str(out)])
+    assert rc == 1 and "--theme: expected a theme name" in capsys.readouterr().err  # an unset $THEME
     framing = tmp_path / "framing.json"
     framing.write_text(json.dumps({"theme": {"episode": "04"}}), encoding="utf-8")
     rc = cli.main(["reel", "--source", str(tmp_path / "missing.mp4"), "--framing", str(framing), "--out", str(out)])

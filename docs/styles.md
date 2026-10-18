@@ -27,7 +27,7 @@ uv run --project bot clipbot reel --source talk.mp4 --style aoi --theme out/talk
 
 | Style | Music | Transition | Use it for |
 |---|---|---|---|
-| `pipeline` | "Stank": funk organ, swung drums, 104 BPM. Cut as cues (below) | dip | **Every Pipeline AI Talks video.** This is the series theme; do not vary it per episode |
+| `pipeline` | "Stank": funk organ, swung drums, 104 BPM. Cut as cues (below) | dip | **Every Pipeline AI Talks video** (or `aoi`, below, for the Art of Intelligence look). This is the series theme; do not vary it per episode |
 | `aoi` | The same "Stank" cues as `pipeline` | horizon wipe, drawn in code (0.6 s) | A Pipeline AI Talks video in Day One AI's Art of Intelligence look, when asked for it. Pair with `--theme aoi` |
 | `future` | "Signal" bed | token stream, drawn in code | Product and AI-explainer reels that want a tech look |
 | `signal` | "Signal": interlocking plucks, 96 BPM, no drum kit | dissolve | Light forward motion |

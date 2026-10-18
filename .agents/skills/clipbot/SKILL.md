@@ -55,10 +55,9 @@ thing that crosses between the two, so every edit you make happens in the plan
 - A theme (`--theme`) is the renderer's look for the cards, captions and labels; the plan
   does not change. Use one only when the user asks for that look: today that is `aoi`, Day
   One AI's Art of Intelligence on-air package, together with `--style aoi` (the look's join,
-  on the Pipeline music). Put the
-  episode number (up to 4 characters) and the on-air date (up to 40) in a theme file, or as
-  `"theme": {...}` in the framing file. clipbot writes it next to the plan as
-  `plan.theme.json`, and `--render` passes it on.
+  on the Pipeline music). Put the episode number (up to 4 characters) and the on-air date (up
+  to 40) in a theme file, or as `"theme": {...}` in the framing file. clipbot writes it next
+  to the plan as `plan.theme.json`, and `--render` passes it on.
 - `--llm` asks the Anthropic API to pick the moments when `ANTHROPIC_API_KEY` is
   set (optional extra `llm`); otherwise the keyword-and-density heuristic runs and
   says so. Do not promise LLM selection without the key.
