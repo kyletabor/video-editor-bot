@@ -12,11 +12,23 @@ A `--framing` file can pin it instead (`"style": "pipeline"`), which is how a se
 sound across every video. `--style` beats the framing file; an explicit `--music FILE`,
 `--transition` or framing `transition` beats the style.
 
+The look of the cards, the burned captions and the labels is a **theme**, which the renderer
+owns ([render/README.md](../render/README.md#themes-the-look-of-cards-captions-and-labels---theme)).
+`clipbot reel --theme aoi` (or a theme file, `{"theme": "aoi", "episode": "04", "date": "..."}`;
+framing `"theme"` works too) records it next to the plan as `<plan>.theme.json` and passes it to
+`cliprender` with `--render`. A style and a theme are chosen separately: the `aoi` style is the
+sound and the join of Day One AI's Art of Intelligence look, and `--theme aoi` is its picture.
+
+```
+uv run --project bot clipbot reel --source talk.mp4 --style aoi --theme out/talk/theme.json --render --out out/talk/plan.json
+```
+
 ## What ships
 
 | Style | Music | Transition | Use it for |
 |---|---|---|---|
 | `pipeline` | "Stank": funk organ, swung drums, 104 BPM. Cut as cues (below) | dip | **Every Pipeline AI Talks video.** This is the series theme; do not vary it per episode |
+| `aoi` | The same "Stank" cues as `pipeline` | horizon wipe, drawn in code (0.6 s) | A Pipeline AI Talks video in Day One AI's Art of Intelligence look, when asked for it. Pair with `--theme aoi` |
 | `future` | "Signal" bed | token stream, drawn in code | Product and AI-explainer reels that want a tech look |
 | `signal` | "Signal": interlocking plucks, 96 BPM, no drum kit | dissolve | Light forward motion |
 | `aurora` | "Aurora": pad and bells, 85 BPM | dissolve | Quiet, reflective material |
@@ -115,7 +127,8 @@ contract and the speed budget) and `render`.
    reads if it brings its own light.
 4. `check` must print ALL PASS at 1920x1080, then a person watches it between a card and a clip.
 5. Match the transition to the music. The glowing, technical ones suit `future`; they fight
-   the funk of `pipeline`, which is why that style keeps the plain dip.
+   the funk of `pipeline`, which is why that style keeps the plain dip. `aoi` is the one
+   exception: the brand's own thin, fast horizon wipe, for the Art of Intelligence look only.
 
 The files in `assets/styles/transitions/` are the ones written so far. Cost: 0.1 to 0.4 s per
 frame at 1080p, so about ten seconds per join. Rendering a reel with a module transition needs

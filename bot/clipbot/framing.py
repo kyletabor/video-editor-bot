@@ -22,6 +22,9 @@ the framing file overrides them wherever it says something.
       "audio_fade_seconds": 0.2,               -> clip audio fade at every cut, 0-1
       "transition": "dip"  |  {"kind": "dissolve", "seconds": 0.5},
       "style": "pipeline",                     -> the style pack (styles.py); --style overrides it
+      "theme": "aoi" | "out/talk/theme.json" | {"theme": "aoi", "episode": "04"}
+                                               -> the renderer's look for cards, captions and labels
+                                                  (themes.py); --theme overrides it
       "layout": {"kind": "pip", "screen": [0, 240, 1440, 600], "speaker": [1440, 270, 480, 270]}
                                                -> every clip's frame (story.py, contract v1.4): the
                                                   shared screen large, the speaker tile in a corner
@@ -40,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .lessons import LINE_LIMIT, MAX_CARD_LINES, TITLE_LIMIT, card_seconds
+from .themes import check_spec
 
 TRANSITIONS = ("cut", "dip", "dissolve")
 CARD_SECONDS_RANGE = (1.0, 10.0)  # contract: card.seconds
@@ -51,7 +55,7 @@ MAX_CLOSING_CARDS = 3  # contract: closing maxItems
 KEYS = (
     "title", "date", "what_you_will_learn", "takeaways", "outro", "opening_seconds", "closing_seconds",
     "outro_seconds", "music_gain_db", "music_fade_seconds", "transition", "style",
-    "audio_fade_seconds", "layout", "music_at",
+    "audio_fade_seconds", "layout", "music_at", "theme",
 )
 
 
@@ -74,6 +78,7 @@ class Framing:
     audio_fade_seconds: float | None = None
     layout: dict | None = None  # default clip.layout (story.parse_layout)
     music_at: str | None = None  # score.MUSIC_AT
+    theme: str | dict | None = None  # a theme name or file, or the theme file's object (themes.py)
 
     def outro_card(self) -> dict | None:
         """The outro card the file asks for, or None when it says nothing about it."""
@@ -158,6 +163,8 @@ def parse_framing(data, where: str = "framing") -> Framing:
         out["audio_fade_seconds"] = _number(data["audio_fade_seconds"], f"{where}.audio_fade_seconds", *AUDIO_FADE_RANGE)
     if "style" in data:
         out["style"] = _text(data["style"], f"{where}.style", TITLE_LIMIT)
+    if "theme" in data:
+        out["theme"] = check_spec(data["theme"], f"{where}.theme")
     if "music_at" in data:
         if data["music_at"] not in ("cards", "ends"):
             raise ValueError(f'{where}.music_at: "cards" or "ends"')

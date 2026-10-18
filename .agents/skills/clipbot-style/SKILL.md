@@ -1,6 +1,6 @@
 ---
 name: clipbot-style
-description: Choose, change or create a style for video-editor-bot reels. A style is the music (scored to the cards) and the transition. Use when a user asks for different music, a theme, a sting, an outro, transitions, a "look", a brand sound, or says a reel's music is wrong. Also use to make new music or a new transition by having agents write it as code.
+description: Choose, change or create a style for video-editor-bot reels. A style is the music (scored to the cards) and the transition; a renderer theme (--theme) is the look of the cards and captions. Use when a user asks for different music, a theme, a sting, an outro, transitions, a "look", a brand sound or the Art of Intelligence look, or says a reel's music is wrong. Also use to make new music or a new transition by having agents write it as code.
 ---
 
 # clipbot-style: the sound and the joins of a reel
@@ -10,9 +10,33 @@ procedure.
 
 ## The rule that is not negotiable
 
-**Pipeline AI Talks videos always use `--style pipeline`** (or `"style": "pipeline"` in the
-framing file). It is the series theme. Do not pick a different style for a Pipeline video, do
+**Pipeline AI Talks videos always use the Pipeline music: `--style pipeline`** (or
+`"style": "pipeline"` in the framing file). It is the series theme. The one other style allowed
+for a Pipeline video is `aoi`, the same music with the Art of Intelligence horizon wipe, and only
+when the user asks for that look (below). Do not pick a different style for a Pipeline video, do
 not regenerate the theme, and do not "improve" its blocks unless Kyle asks for exactly that.
+
+## The Art of Intelligence look
+
+Day One AI's on-air package for the Friday series (the "Art of Intelligence" design canvas) is
+two choices, because the bot owns the sound and the joins and the renderer owns the picture:
+
+```
+uv run --project bot clipbot reel --source <file> --style aoi --theme out/<name>/theme.json --render --out out/<name>/plan.json
+```
+
+- `--style aoi`: the Pipeline cues, cut exactly as `pipeline` cuts them, and the brand's 0.6 s
+  horizon wipe at every join (`render/cliprender/themes/horizon_wipe.py`).
+- `--theme`: the title card, the chapter counter and progress bar, the end card, and captions
+  and labels on navy panels. The theme file holds the per-episode values:
+  `{"theme": "aoi", "episode": "04", "date": "Friday, October 9"}`. Plain `--theme aoi` leaves
+  out the episode chip and the date. Framing `"theme"` takes a name, a path or that object.
+- Use it only when asked for that look; the default for a Pipeline video stays `--style pipeline`
+  with no theme. Never pair the theme with another style's music for a Pipeline video.
+- The wipe overlaps each join, so a card's music sounds over the first and last 0.6 s of speech.
+  The renderer keeps the clips' level (its headroom rule bounds each join by what it holds).
+- clipbot writes the theme beside the plan as `plan.theme.json`. A hand re-render must pass it:
+  `uv run --project render --extra styles cliprender out/<name>/plan.json --root . --theme out/<name>/plan.theme.json`.
 
 ## Use a style
 
