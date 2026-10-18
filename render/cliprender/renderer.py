@@ -27,6 +27,7 @@ from .reel import (
     render_reel,
     timeline,
 )
+from .themes import load_theme
 from .transitions import load_transition
 
 BOUNDS = {"internal": (15, 120), "linkedin": (15, 90), "shorts": (15, 60), "email": (15, 60)}
@@ -457,7 +458,7 @@ def render_audio(session, workspace, selected):
     return wav, samples
 
 
-def render_clip(session, job, clip, selection, video_filter, burn_cues, framing=None):
+def render_clip(session, job, clip, selection, video_filter, burn_cues, framing=None, theme=None):
     """Render one clip in parts and join them; return (staged file, audio sample count).
 
     Each part (see `parts`) is decoded from an input seek just before it, trimmed by frame
@@ -472,6 +473,9 @@ def render_clip(session, job, clip, selection, video_filter, burn_cues, framing=
     `framing` (v1.4) holds what a clip's `layout` and `overlays` add: the output size and, for
     a pip clip, the `Pip` whose bottom tile burned captions must avoid. Overlays are written as
     one ASS script on the clip's timeline, whatever the caption mode.
+
+    `theme` (`cliprender.themes.Theme`) restyles burned captions and labels; None keeps the
+    renderer's own look, byte for byte.
     """
     selected, _, total, tail = selection
     workspace = job / "_parts"
@@ -497,7 +501,13 @@ def render_clip(session, job, clip, selection, video_filter, burn_cues, framing=
         if runs:
             labels = "_overlays.ass"
             avoid = pip.corner if pip is not None and pip.tile is not None else None
-            (workspace / labels).write_text(format_ass(runs, dimensions, avoid), encoding="utf-8")
+            look = theme.label_look if theme is not None else None
+            (workspace / labels).write_text(
+                format_ass(runs, dimensions, avoid, look), encoding="utf-8"
+            )
+    if theme is not None and captions and theme.caption_style:
+        # The theme's font and colours first; a pip clip's margins (if any) still apply.
+        style = ",".join(part for part in (theme.caption_style, style) if part)
     names, offsets = [], []
     for index, part in enumerate(parts(selected, session.times, session.origin)):
         _, stop, _, _, offset = part
@@ -652,11 +662,23 @@ def publish(files, overwrite, backup):
 
 
 def render_plan(
-    plan_path, *, root=None, ffmpeg="ffmpeg", ffprobe="ffprobe", timeout=1800, overwrite=False
+    plan_path,
+    *,
+    root=None,
+    ffmpeg="ffmpeg",
+    ffprobe="ffprobe",
+    timeout=1800,
+    overwrite=False,
+    theme=None,
 ):
+    """Render every output of the plan; `theme` is a theme name or theme file
+    (`cliprender.themes.load_theme`), None for the renderer's own look."""
     root = Path(root).resolve() if root else Path(__file__).resolve().parents[2]
     plan_path = Path(plan_path).resolve()
     plan = load_plan(plan_path, root)
+    # A theme is checked before any tool starts: a typo in its name or file must not cost
+    # the clips' encodes.
+    theme = load_theme(theme, root) if theme is not None else None
     if not math.isfinite(timeout) or timeout <= 0:
         raise RenderError("--timeout must be finite and greater than zero")
     source = resolve(root, plan["source"]["path"])
@@ -767,6 +789,14 @@ def render_plan(
             warn(
                 f"clip {clip['id']}: speaker tracking is unavailable; using the contract's center fallback"
             )
+    if reel is not None and theme is not None:
+        for card in reel_cards:
+            try:
+                theme.draw_card(card, planned[0][3])
+            except (OSError, ValueError) as exc:
+                raise RenderError(
+                    f"Theme {theme.name} cannot draw card {card.title!r}: {exc}"
+                ) from exc
     if reel is not None:
         planned_length = planned_seconds(reel_items, plan)
         if planned_length > MAX_RECOMMENDED_SECONDS:
@@ -823,7 +853,14 @@ def render_plan(
                 clip_cues = retime(cues, clip["segments"]) if caption_mode != "none" else []
                 burn_cues = tidy_for_burn(clip_cues) if caption_mode == "burn_in" else []
                 rendered, samples = render_clip(
-                    session, job, clip, selection, video_filter, burn_cues, framings.get(clip_id)
+                    session,
+                    job,
+                    clip,
+                    selection,
+                    video_filter,
+                    burn_cues,
+                    framings.get(clip_id),
+                    theme,
                 )
                 actual_duration = verify(
                     tools,
@@ -869,6 +906,7 @@ def render_plan(
                     reel.get("intro", {}).get("title", reel_dest.stem),
                     style=style,
                     draw=draw,
+                    theme=theme,
                 )
             except (RenderError, ValueError, OSError) as exc:
                 raise RenderError(f"Reel: {exc}; no outputs from this run published") from exc

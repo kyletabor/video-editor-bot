@@ -411,6 +411,50 @@ path only when it has `layout: pip` or `overlays`).
   included). Braces and backslashes in a label are shown as look-alikes rather than read
   as ASS tags.
 
+## Themes: the look of cards, captions and labels (`--theme`)
+
+The contract leaves the look of a card to the renderer, so a theme is chosen when rendering
+and the plan does not change: any plan, old or new, renders in any theme. Without `--theme`
+every output is exactly what it was (the default look below is untouched).
+
+```sh
+uv run --project render --extra styles cliprender out/talk/plan.json --root . --theme aoi
+uv run --project render --extra styles cliprender out/talk/plan.json --root . --theme out/talk/theme.json
+```
+
+A theme file names a built-in theme and fills in the per-video values it shows; unknown
+names and keys are errors before anything renders:
+
+```json
+{"theme": "aoi", "episode": "04", "date": "Friday, October 9"}
+```
+
+`aoi` (`cliprender/themes/aoi.py`) is Day One AI's Art of Intelligence on-air package, from
+the "Art of Intelligence" design canvas (title card, overlays, screen-share, end card and
+transition boards): a navy ground with a faint grid, the sun-on-the-horizon mark, mono
+labels in amber and the 4 px horizon band. The intro becomes the title card (lockup, episode
+chip, the plan's title, the intro lines as a dateline, the sun rising), chapter cards count
+"CHAPTER 02 / 07" with the progress bar and name where the clip starts in the session,
+opening, closing and v1.4 slides carry the episode bug, and the outro becomes the end card
+(last title row in the sun gradient, the Day One AI lockup, the sun set). Burned captions and
+labels take the overlay board's bold light text on a navy panel. Card text follows the
+default look's rules (whole words, the same shrink steps, never clipped; `test_themes.py`
+renders the contract's extremes on 16:9, 9:16 and 1:1 with and without a picture), and
+titles are balanced across their rows.
+
+The design names CSS system font stacks, not files, so `themes/fonts.py` resolves them on
+the host: Segoe UI Black/Bold and Cascadia Code on Windows, SF and Menlo on macOS, DejaVu or
+Liberation on Linux, Pillow's bundled face as the last resort. A theme therefore looks a
+little different per OS; no font file is shipped, because the repository cannot license one.
+
+The brand's join, the **horizon wipe** (`cliprender/themes/horizon_wipe.py`, 0.6 s on the
+series' cubic-bezier(0.6, 0, 0.4, 1)), is an ordinary v1.3 module transition: a style or a
+plan names it like any other (`{"kind": "module", "module":
+"render/cliprender/themes/horizon_wipe.py", "seconds": 0.6}`), so the bot, not the theme,
+decides whether a reel uses it. Like every overlapping join it lets a card's music sound over
+the first and last 0.6 s of speech; the headroom rule (`reel.headroom_gain`, above) bounds
+each such join by what it holds, so the Talk #4 reel keeps the clips' level.
+
 ## Development and measured checks
 
 ```sh

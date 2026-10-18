@@ -121,15 +121,28 @@ def alignment(position, avoid=None):
     return 9 if avoid == "top-left" else 7
 
 
-def format_ass(runs, size, avoid=None):
+@dataclass(frozen=True)
+class LabelLook:
+    """How a label is set: the libass font name, ASS `&HAABBGGRR` colours and boldness.
+    The default is the renderer's own look; a theme (`cliprender.themes`) supplies another."""
+
+    font: str = FONT
+    text: str = TEXT_COLOUR
+    box: str = BOX_COLOUR
+    bold: bool = False
+
+
+def format_ass(runs, size, avoid=None, look=None):
     """An ASS script that burns `runs` on a frame of `size`, in pixels (PlayRes = size)."""
+    look = look or LabelLook()
     width, height = size
     font = max(8, round(height * FONT_SHARE))
     margin_x, margin_y = round(width * MARGIN_X_SHARE), round(height * MARGIN_Y_SHARE)
     pad = max(2, round(font * 0.3))
+    bold = -1 if look.bold else 0
     style = (
-        f"{FONT},{font},{TEXT_COLOUR},{TEXT_COLOUR},{BOX_COLOUR},{BOX_COLOUR},"
-        f"0,0,0,0,100,100,0,0,3,{pad},0"
+        f"{look.font},{font},{look.text},{look.text},{look.box},{look.box},"
+        f"{bold},0,0,0,100,100,0,0,3,{pad},0"
     )
     lines = [
         "[Script Info]",
