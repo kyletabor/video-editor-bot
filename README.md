@@ -78,7 +78,8 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
   `uv run --project render cliprender out/q3-review/plan.json --root .`
 - Add `--style NAME` for music and a transition: `uv run --project bot clipbot styles` lists
   them. Music plays under the cards only, cut so it starts with a card and lands on an ending
-  ([docs/styles.md](docs/styles.md)). Pipeline AI Talks videos use `--style pipeline`.
+  ([docs/styles.md](docs/styles.md)). Pipeline AI Talks videos use `--style pipeline`, or
+  `--style aoi --theme aoi` for Day One AI's Art of Intelligence look (the same music).
   Edited the cards by hand afterwards? `clipbot score PLAN --style NAME` re-scores the music.
 - Shared screens with private details? `--redact auto` blurs e-mail addresses, phone numbers,
   keys and names you list (needs tesseract); `--redact text` blurs all on-screen text, and

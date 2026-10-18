@@ -1,0 +1,22 @@
+{
+  "name": "aoi",
+  "title": "Art of Intelligence: the Pipeline theme with the horizon wipe",
+  "description": "The Pipeline AI Talks music (\"Stank\"), cut to the cards exactly as the pipeline style does, with Day One AI's Art of Intelligence horizon wipe at every join: a glowing band rises up the frame over the new shot. Pair it with --theme aoi for the brand's cards, captions and labels. The wipe is drawn in code and overlaps each join by 0.6 s, as a dissolve does.",
+  "music": {
+    "kind": "cues",
+    "bpm": 104,
+    "beats_per_bar": 4,
+    "gain_db": -4.5,
+    "pickup": {"file": "../pipeline/music/pickup.flac", "beats": 2},
+    "vamp": [
+      {"file": "../pipeline/music/riff-1.flac", "resolved": "../pipeline/music/sting-1.flac"},
+      {"file": "../pipeline/music/riff-2.flac"},
+      {"file": "../pipeline/music/riff-3.flac", "resolved": "../pipeline/music/sting-3.flac"},
+      {"file": "../pipeline/music/riff-4.flac"}
+    ],
+    "stings": ["../pipeline/music/riff-4.flac", "../pipeline/music/sting-1.flac", "../pipeline/music/riff-2.flac", "../pipeline/music/sting-3.flac"],
+    "hold": {"file": "../pipeline/music/hold.flac", "seconds": 5.7},
+    "outro": {"file": "../pipeline/music/outro.flac", "seconds": 6.081, "lead_bars": 1}
+  },
+  "transition": {"kind": "module", "module": "../../../render/cliprender/themes/horizon_wipe.py", "seconds": 0.6}
+}

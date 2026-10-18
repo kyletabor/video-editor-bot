@@ -35,8 +35,9 @@ thing that crosses between the two, so every edit you make happens in the plan
 | To choose the moments themselves | outline, then a `moments.json` (below), then `clipbot reel --moments out/<name>/moments.json --source <file> --render --out out/<name>/plan.json` |
 | One clip: "the part where …" | `uv run --project bot clipbot plan --source <file> --request "<what it is about>" --summary --out out/<name>/plan.json`, then render |
 | Only the summary and transcript | `uv run --project bot clipbot summarize --source <file> --title "<title>" --out out/<name>/summary.md` |
-| Render an existing or hand-edited plan | `uv run --project render cliprender out/<name>/plan.json --root .` (`--overwrite` to replace earlier outputs) |
-| Music, a theme, transitions, "make it sound like ..." | add `--style <name>` to `clipbot reel` (`clipbot styles` lists them); a new sound or transition is the `clipbot-style` skill |
+| Render an existing or hand-edited plan | `uv run --project render cliprender out/<name>/plan.json --root .` (`--overwrite` to replace earlier outputs; add `--theme out/<name>/plan.theme.json` when that file is there) |
+| Music, transitions, "make it sound like ..." | add `--style <name>` to `clipbot reel` (`clipbot styles` lists them); a new sound or transition is the `clipbot-style` skill |
+| Day One AI's "Art of Intelligence" look (its title card, chapter counter, navy captions) | add `--style aoi --theme <theme.json>` to `clipbot reel`, with a theme file `{"theme": "aoi", "episode": "04", "date": "Friday, October 9"}` (or `--theme aoi` without the episode chip and date) |
 
 - `--minutes N` targets N minutes ±20 % including cards (a 4 s intro and a 3 s
   chapter card per clip). 2.5–5 minutes suits a 1–2 hour session; the sample
@@ -45,10 +46,18 @@ thing that crosses between the two, so every edit you make happens in the plan
   recording's length (an hour of video takes roughly 10 minutes). Tell the user
   before starting. It saves an `.srt` next to the outputs and reuses it next time.
   A sidecar transcript the user already has goes in with `--srt <file>`.
-- A Pipeline AI Talks video always gets `--style pipeline` (the series theme). For anything
-  else, offer the styles once and keep the answer in the framing file (`"style": "<name>"`).
-  Music plays under the cards only; after hand-editing card seconds in a plan that uses a cue
-  style, run `clipbot score out/<name>/plan.json --style <name>` before rendering.
+- A Pipeline AI Talks video always gets the Pipeline music: `--style pipeline` (the series
+  theme), or `--style aoi` when the user asks for the Art of Intelligence look (the same music
+  with the brand's horizon wipe). For anything else, offer the styles once and keep the answer
+  in the framing file (`"style": "<name>"`). Music plays under the cards only; after
+  hand-editing card seconds in a plan that uses a cue style, run
+  `clipbot score out/<name>/plan.json --style <name>` before rendering.
+- A theme (`--theme`) is the renderer's look for the cards, captions and labels; the plan
+  does not change. Use one only when the user asks for that look: today that is `aoi`, Day
+  One AI's Art of Intelligence on-air package, together with `--style aoi` (the look's join,
+  on the Pipeline music). Put the episode number (up to 4 characters) and the on-air date (up
+  to 40) in a theme file, or as `"theme": {...}` in the framing file. clipbot writes it next
+  to the plan as `plan.theme.json`, and `--render` passes it on.
 - `--llm` asks the Anthropic API to pick the moments when `ANTHROPIC_API_KEY` is
   set (optional extra `llm`); otherwise the keyword-and-density heuristic runs and
   says so. Do not promise LLM selection without the key.
@@ -118,7 +127,8 @@ intro chatter, two clips saying the same thing).
 
 ## Report to the user
 
-- Paths: `reel.mp4`, each clip, `summary.md`, `plan.json`, `moments.json`.
+- Paths: `reel.mp4`, each clip, `summary.md`, `plan.json`, `moments.json` (and
+  `plan.theme.json` when the reel has a theme).
 - The moments chosen: timestamp, length, takeaway, in order, plus the total.
 - Warnings from stderr (length outside the preset, fallback framing) in plain words.
 - What you did not verify (you did not watch it; speech and lip sync are for a human).
@@ -134,5 +144,6 @@ intro chatter, two clips saying the same thing).
 | `clipbot` exits 1 / `cliprender` exits 1 | `file not found: <path>`, an ffmpeg error or an invalid plan; the message names it. |
 | `ffmpeg not found on PATH` | Run the pinned installer, or `brew install ffmpeg` on macOS. |
 | `install with: uv run --project bot --extra whisper …` | The transcription extra is not installed; use that command form. |
+| `clipbot` exits 1 with `unknown theme` / `cannot read theme file` | A typo in `--theme` or a broken theme file; nothing ran yet. `cliprender` exits 1 with `Theme aoi: unknown key(s)` for a key the theme does not take (aoi takes `episode` and `date`). |
 
 Check the whole setup with `uv run --locked scripts/check.py` (`check: OK`).

@@ -34,6 +34,27 @@ def test_shipped_styles_load_and_pipeline_is_the_cue_style():
     assert loaded["classic"].file(loaded["classic"].music["file"]) == REPO_ROOT / "assets" / "music" / "bed.mp3"
 
 
+def _resolved(style, value, key=None):
+    """A style's music with every block named by the file it resolves to."""
+    if isinstance(value, dict):
+        return {k: _resolved(style, v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolved(style, v, key) for v in value]
+    return style.file(value) if key in ("file", "resolved", "stings") else value
+
+
+def test_aoi_is_the_pipeline_music_with_the_renderers_horizon_wipe():
+    """Pipeline AI Talks keep the Pipeline music in the Art of Intelligence look: the aoi
+    style must play exactly pipeline's blocks, so an edit to one that misses the other fails."""
+    aoi, pipeline = styles.load("aoi"), styles.load("pipeline")
+    assert _resolved(aoi, aoi.music) == _resolved(pipeline, pipeline.music)
+    wipe = REPO_ROOT / "render" / "cliprender" / "themes" / "horizon_wipe.py"
+    assert aoi.file(aoi.transition["module"]) == wipe
+    assert styles.plan_transition(aoi) == {"kind": "module", "seconds": 0.6,
+                                           "module": "render/cliprender/themes/horizon_wipe.py"}
+    assert aoi.music_label == "cues at 104 BPM" and aoi.transition_label == "horizon_wipe 0.6 s"
+
+
 def test_load_by_directory_or_style_json_path(tmp_path):
     root = write_style(tmp_path / "mine", BED)
     for target in (root, root / "style.json"):

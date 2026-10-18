@@ -13,9 +13,10 @@ labels unlabelled cues from a Gemini transcript (speakers.py). Word timings
 fillers and long pauses without ever clipping a word (cuts.py). `--framing FILE`
 sets every card around the moments from one JSON file (framing.py). `--style NAME`
 picks a style pack: its music, scored to the cards, and its transition (styles.py,
-score.py; `clipbot styles` lists them). `--redact auto|text|FILE` blurs private
-details on screen in a redacted copy of the source that the plan then names
-(redact.py; `clipbot redact` does the same for an existing plan).
+score.py; `clipbot styles` lists them). `--theme NAME|FILE` dresses the cards, captions
+and labels in a renderer theme, recorded next to the plan (themes.py). `--redact
+auto|text|FILE` blurs private details on screen in a redacted copy of the source that
+the plan then names (redact.py; `clipbot redact` does the same for an existing plan).
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from . import silence
 from . import speakers as spk
 from . import styles as stylesmod
 from . import summarize as summ
+from . import themes as themesmod
 from . import words as wordsmod
 
 
@@ -199,6 +201,23 @@ def _cut_summary(rep: cuts.CutReport) -> str:
 
 def cmd_reel(a: argparse.Namespace) -> int:
     minutes = a.minutes if a.minutes is not None else 4.0  # target is advisory
+    # The framing file, the style and the theme's name are read first: a typo in one of them must
+    # not cost the transcription, the silence scan or the redaction below. (A theme's own keys,
+    # such as aoi's episode, are cliprender's to check; it does so before its first encode.)
+    # --framing FILE (framing.py) overrides the flags below wherever it says something; the
+    # card seconds it sets are in place before the runtime line is computed.
+    framing = framingmod.load_framing(a.framing) if a.framing else None
+    # A style (styles.py) supplies the music and the transition; --style beats the framing file's
+    # "style", and an explicit --music / --transition / framing transition beats the style.
+    style_name = a.style or (framing.style if framing else None)
+    style = stylesmod.load(style_name) if style_name else None
+    # A theme (themes.py) is the renderer's look; --theme beats the framing file's "theme". An
+    # empty --theme (an unset shell variable) is an error, not "no theme".
+    if a.theme is not None:
+        theme_spec, where = themesmod.check_spec(a.theme, "--theme"), "--theme"
+    else:
+        theme_spec, where = (framing.theme if framing else None), f"{a.framing}.theme"
+    theme = themesmod.resolve(theme_spec, where) if theme_spec else None
     info = probemod.probe(a.source)
     out_path = Path(a.out)
     out_dir = out_path.parent
@@ -296,13 +315,6 @@ def cmd_reel(a: argparse.Namespace) -> int:
         given = Path(a.takeaways).read_text(encoding="utf-8").splitlines()
     takeaways = reelmod.takeaway_lines(moments, cues, given=given, hand_picked=hand_picked)
 
-    # --framing FILE (framing.py) overrides the flags below wherever it says something; the
-    # card seconds it sets are in place before the runtime line is computed.
-    framing = framingmod.load_framing(a.framing) if a.framing else None
-    # A style (styles.py) supplies the music and the transition; --style beats the framing file's
-    # "style", and an explicit --music / --transition / framing transition beats the style.
-    style_name = a.style or (framing.style if framing else None)
-    style = stylesmod.load(style_name) if style_name else None
     has_music = bool(a.music) or bool(style and style.music)
     if framing and not has_music and (framing.music_gain_db is not None or framing.music_fade_seconds is not None):
         print(f"framing: music settings in {a.framing} ignored (no --music)", file=sys.stderr)
@@ -334,6 +346,7 @@ def cmd_reel(a: argparse.Namespace) -> int:
     planmod.validate(plan)
     title = plan["output"]["reel"]["intro"]["title"]  # what the viewer sees, framing applied
     out_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    theme_path = themesmod.record(out_path, theme, log=lambda msg: print(msg, file=sys.stderr))
     moments_path = out_dir / "moments.json"
     moments_path.write_text(json.dumps([m.spec() for m in moments], indent=2) + "\n", encoding="utf-8")
     summary_path.write_text(
@@ -369,8 +382,10 @@ def cmd_reel(a: argparse.Namespace) -> int:
     print(f"plan written: {out_path}")
     print(f"moments written: {moments_path}")
     print(f"summary written: {summary_path}")
+    if theme_path:
+        print(f"theme written: {theme_path} ({theme['theme']}; cliprender --theme {theme_path} renders this look again)")
     if a.render:
-        return render(out_path)
+        return render(out_path, theme=theme_path)
     return 0
 
 
@@ -482,8 +497,9 @@ def cmd_redact(a: argparse.Namespace) -> int:
     return 0
 
 
-def render(plan_path: Path) -> int:
-    """Hand the plan to Ramsey's renderer in its own project and echo what it reports."""
+def render(plan_path: Path, theme: Path | None = None) -> int:
+    """Hand the plan to Ramsey's renderer in its own project and echo what it reports.
+    `theme` is a theme file for `cliprender --theme` (themes.record writes it)."""
     uv = shutil.which("uv")
     if not uv:
         raise RuntimeError("uv not found on PATH; run: uv run --project render cliprender <plan> --root <repo>")
@@ -495,6 +511,8 @@ def render(plan_path: Path) -> int:
     if kind == "module":  # a code-drawn transition needs numpy in the renderer (render/pyproject.toml)
         cmd += ["--extra", "styles"]
     cmd += ["cliprender", str(plan_path.resolve()), "--root", str(planmod.REPO_ROOT), "--overwrite"]
+    if theme is not None:
+        cmd += ["--theme", str(Path(theme).resolve())]
     print("render: " + subprocess.list2cmdline(cmd), file=sys.stderr)
     print("render: probing the source and cutting clips; on a 1-2 h recording the first clip line "
           "can take a few minutes and the whole reel about ten", file=sys.stderr)
@@ -613,8 +631,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="text file, one takeaway per line, for the closing cards (default: the moments' lessons)")
     pr.add_argument("--framing", default=None,
                     help="JSON {title, date, what_you_will_learn, takeaways, outro, *_seconds, music_gain_db, "
-                         "music_fade_seconds, transition}: the cards around the moments, overriding the flags "
-                         "(clipbot/framing.py)")
+                         "music_fade_seconds, transition, style, theme, ...}: the cards around the moments, "
+                         "overriding the flags (clipbot/framing.py)")
     pr.add_argument("--keep-fillers", action="store_true",
                     help="do not cut filler words or long pauses inside moments")
     pr.add_argument("--max-silence", type=float, default=cuts.MAX_SILENCE,
@@ -632,6 +650,10 @@ def main(argv: list[str] | None = None) -> int:
                          "a style directory also works)")
     pr.add_argument("--music", default=None,
                     help="music bed under the cards (audio file you have the rights to; see contract/README.md)")
+    pr.add_argument("--theme", default=None, metavar="NAME|FILE",
+                    help="the renderer's look for cards, captions and labels: a theme name (aoi) or a theme JSON "
+                         'file ({"theme": "aoi", "episode": "04", "date": "..."}). Written next to the plan as '
+                         "<plan>.theme.json and passed to cliprender by --render (clipbot/themes.py)")
     add_redact_args(pr)
     pr.add_argument("--render", action="store_true", help="also run cliprender on the plan")
     pr.set_defaults(fn=cmd_reel)

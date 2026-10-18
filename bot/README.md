@@ -378,6 +378,15 @@ and echoes what it prints; the reel path is reported when the renderer writes a
 `reel<TAB>path<TAB>seconds` line. Until `render/` supports v1.1 reels it still
 writes every clip and clipbot says so.
 
+`--theme NAME|FILE` (or `"theme"` in the framing file: a name, a file, or the theme file's
+object) picks the renderer's look for the cards, burned captions and labels
+(`clipbot/themes.py`; the themes themselves are in `render/README.md`). The plan does not
+change. clipbot checks the theme before the slow steps, writes it next to the plan as
+`<plan>.theme.json` (a run without a theme removes an earlier one), and `--render` passes
+that file as `cliprender --theme`, so a later render of the same plan with that file looks
+the same. Day One AI's Art of Intelligence look is `--style aoi --theme aoi`
+([docs/styles.md](../docs/styles.md)).
+
 ## Tests
 
 ```bash

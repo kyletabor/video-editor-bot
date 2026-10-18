@@ -10,6 +10,7 @@ How they work and how to make one: [`docs/styles.md`](../../docs/styles.md). The
 | `signal/` | `music/signal.mp3`, `music/synth.py` | Written as code by a Sonnet 5.5 agent, 2026-10-01 |
 | `aurora/` | `music/aurora.mp3`, `music/synth.py` | Written as code by a Sonnet 5.5 agent, 2026-10-01 |
 | `future/` | `style.json` only | Signal's bed with the token-stream transition |
+| `aoi/` | `style.json` only | The Pipeline cue blocks (`../pipeline/music/`) with the Art of Intelligence horizon wipe (`render/cliprender/themes/horizon_wipe.py`, the renderer's). Made for Day One AI's Art of Intelligence look, 2026-10-18 |
 | `classic/` | `style.json` only | Points at `../music/bed.mp3` (1924, US public domain; see `../music/LICENSE`) |
 | `transitions/` | six `.py` files | Code-drawn transitions (`scripts/style_lab.py` has the contract). Five written by Sonnet 5.5 agents on 2026-10-01, plus `plain_dissolve.py` as the minimal example |
 
@@ -19,7 +20,7 @@ Everything under `pipeline/`, `signal/`, `aurora/` and `transitions/` is origina
 for this project: the audio is the output of the `synth.py` beside it (numpy and scipy
 oscillators, filters and noise; no samples, no recordings, no third-party material), and the
 transitions are plain Python. Nothing here needs a licence from anyone outside the project.
-`classic/` adds no audio of its own.
+`classic/`, `future/` and `aoi/` add no audio of their own.
 
 ## Rebuilding the Pipeline theme
 
@@ -33,7 +34,8 @@ ffmpeg -y -i out/stank/theme.wav -c:a libmp3lame -b:a 192k assets/styles/pipelin
 
 The synth is seeded: the same code gives the same samples. If a block's length changes,
 update `seconds` in `pipeline/style.json` (a test compares the outro's stated length with the
-file). FLAC, not MP3, for the blocks: they are placed to the sample, and MP3 adds encoder
+file) and the same block in `aoi/style.json` (a test checks the two styles play the same
+music). FLAC, not MP3, for the blocks: they are placed to the sample, and MP3 adds encoder
 delay.
 
 **The theme is the series' identity. Change it only when Kyle asks.**
