@@ -160,6 +160,7 @@ class Span:
     first: float
     last: float
     text: str
+    speaker: str | None = None
 
     def contains_start(self, t: float) -> bool:
         return self.first <= t < self.last
@@ -180,7 +181,7 @@ def sentence_spans(words: list[Word]) -> list[Span]:
     def flush() -> None:
         if buf:
             out.append(Span(buf[0].safe_start, buf[-1].safe_end, buf[0].start, buf[-1].end,
-                            " ".join(w.text for w in buf)))
+                            " ".join(w.text for w in buf), buf[-1].speaker))
             buf.clear()
 
     for i, w in enumerate(words):
@@ -235,6 +236,29 @@ class Snapper:
 
     def snap(self, start: float, end: float) -> tuple[float, float]:
         return self.start(start), self.end(end)
+
+    # -- the thought an end closes (reel.finish_thought) ---------------------
+    def _ending_at(self, t: float) -> int | None:
+        for k, sp in enumerate(self.spans):
+            if abs(sp.end - t) <= 1e-3 or sp.contains_end(t):
+                return k
+        return None
+
+    def sentence_before(self, t: float) -> str:
+        """The text of the sentence an end at `t` closes ("" in a gap)."""
+        k = self._ending_at(t)
+        return self.spans[k].text if k is not None else ""
+
+    def next_end(self, t: float) -> float | None:
+        """The end of the sentence after the one `t` closes, by the same speaker; None when
+        the next sentence is someone else's or there is none."""
+        k = self._ending_at(t)
+        if k is None or k + 1 >= len(self.spans):
+            return None
+        here, nxt = self.spans[k], self.spans[k + 1]
+        if here.speaker and nxt.speaker and here.speaker != nxt.speaker:
+            return None
+        return nxt.end
 
 
 def snap_outward(start: float, end: float, spans: list[Span], max_snap: float = MAX_SNAP) -> tuple[float, float]:
@@ -371,6 +395,35 @@ class WordSnapper:
 
     def snap(self, start: float, end: float) -> tuple[float, float]:
         return self.start(start), self.end(end)
+
+    # -- the thought an end closes (reel.finish_thought) ---------------------
+    def _last_word(self, t: float) -> int:
+        """Index of the last word ending at or before `t` (-1: none)."""
+        ws = self.words
+        i = bisect_right(self._starts, t + _EPS) - 1
+        while i >= 0 and ws[i].end > t + _EPS:
+            i -= 1
+        return i
+
+    def sentence_before(self, t: float) -> str:
+        """The words of the sentence an end at `t` closes, back to its start."""
+        i = self._last_word(t)
+        if i < 0:
+            return ""
+        k = i
+        while not self._starts_sentence(k):
+            k -= 1
+        return " ".join(w.text for w in self.words[k:i + 1])
+
+    def next_end(self, t: float) -> float | None:
+        """Where the next sentence after `t` ends (the usual sentence-end search, `end`), when
+        the same speaker says it; None when someone else speaks next or nothing follows."""
+        ws = self.words
+        i = self._last_word(t)
+        j = i + 1
+        if j >= len(ws) or (i >= 0 and not _same_speaker(ws[i], ws[j])):
+            return None
+        return self._extend(j, ws[j].start)
 
     # -- around the edges ----------------------------------------------------
     def speech_edges(self, start: float, end: float) -> tuple[float, float]:

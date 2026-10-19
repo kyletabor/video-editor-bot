@@ -1,0 +1,85 @@
+"""Does a clip stop on a setup line, before the speaker's point?
+
+Kyle's review of the Talk #4 reel (2026-10-19): it was "really good except" a couple of
+clips that "just got cut off" where it "sounded like was gonna be a great sound bite",
+the speaker saying something like "and the cool thing is..." and the reel cutting to the
+next card. Every edge was on a word boundary and a sentence boundary, so the earlier
+rules (cuts.py) were satisfied: a 0.45 s pause, or a period in Meet's captions, closes a
+sentence, and "And the cool thing is." is a sentence by that measure. It is not a
+thought. The payoff is the next sentence.
+
+`dangling(text)` reads the last sentence of a clip and names the setup it ends on, or
+returns None for a complete point. It is a text rule, so it works the same on Meet
+captions, an SRT and whisper words. reel.finish_thought uses it to carry a clip's end
+on through the payoff; the rules are deliberately narrow (a lead-in phrase, a colon or
+an ellipsis, or a sentence that ends on a word that cannot end one) so a complete
+sentence is never stretched.
+"""
+
+from __future__ import annotations
+
+import re
+
+# "the cool thing is", "and the best part was", "one big reason is", "the trick here is"
+_NOUNS = (
+    "thing|things|part|idea|trick|point|reason|key|secret|question|problem|catch|kicker|"
+    "takeaway|difference|lesson|goal|plan|result|answer|bit|news|beauty|magic|insight|benefit|"
+    "advantage|upshot|bottom line|punchline|hack|cool part|nice part"
+)
+_LEAD_INS = [
+    re.compile(rf"\b(?:the|a|my|our|one|another|this|that|other)\s+(?:[\w'-]+\s+){{0,3}}(?:{_NOUNS})\s+"
+               r"(?:(?:here|there|about (?:it|this|that))\s+)?(?:is|was|being|are|were)$"),
+    # Talk #4 clip 3: "The only difference was, and this is the cool part." (the payoff came next)
+    # "this is" points forward; "and that's the cool thing" points back at a finished point.
+    re.compile(rf"\b(?:this|here)(?:'s| is)\s+(?:the|my|a|one|another)\s+(?:[\w'-]+\s+){{0,2}}(?:{_NOUNS})$"),
+    # "what I love about it is", "what's cool is", "the way it works is", "how it works is"
+    re.compile(r"\b(?:what(?:'s| is| was)?|which|the way|how|why|where)\b(?:\s+[\w'-]+){0,5}\s+(?:is|was)$"),
+    # "here's the thing", "here's what", "here is how"
+    re.compile(r"\bhere(?:'s| is)(?:\s+(?:the\s+[\w'-]+|what|how|why|where|who|one|another|a))?$"),
+    re.compile(r"\b(?:let me show you|i'll show you|i can show you|watch this|check this out|look at this|"
+               r"for example|for instance|such as|you know what|guess what|get this|and then|"
+               r"so what (?:i|we|it|you) (?:did|do|does) (?:is|was)|it turns out|turns out|"
+               r"the answer is|it's basically|basically it's)$"),
+]
+# A sentence cannot end on these, whatever the punctuation says ("...and it gives you the.")
+_OPEN_WORDS = {"and", "but", "or", "because", "the", "a", "an", "to", "of", "with", "for", "if",
+               "gonna", "into", "whether", "unless", "plus", "than"}
+_OPEN_PUNCT = (":", "...", "…", "—", "–", "-", ",")
+# "that's what it is", "that's just how it was": a pronoun alone before is/was closes the thought
+_COMPLETE = re.compile(r"^(?:what|which|how|why|where|the way)\s+(?:it|that|this|he|she|they|you|we|i|things|life)"
+                       r"(?:\s+(?:just|always|really))?\s+(?:is|was)$")
+_TRIM = re.compile(r"[\s\"'“”‘’)\]]+$")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def last_sentence(text: str) -> str:
+    """The final sentence of `text` (by . ! ?), whitespace-normalised."""
+    text = " ".join(text.split())
+    parts = [p for p in _SENTENCE.split(text) if p.strip()]
+    return parts[-1] if parts else ""
+
+
+def dangling(text: str) -> str | None:
+    """The setup the last sentence of `text` ends on, or None when it ends on a point.
+
+    >>> dangling("It writes the plan. And the cool thing is...")
+    'the cool thing is'
+    >>> dangling("It writes the plan for you.") is None
+    True
+    """
+    sentence = _TRIM.sub("", last_sentence(text))
+    if not sentence:
+        return None
+    if sentence.endswith(_OPEN_PUNCT):
+        tail = sentence.rstrip(":.…—–-, ")
+        return (" ".join(tail.split()[-4:]) + sentence[len(tail):].strip()) or sentence
+    bare = re.sub(r"[.!?]+$", "", sentence).strip().lower()
+    bare = bare.replace("’", "'")
+    for rx in _LEAD_INS:
+        m = rx.search(bare)
+        if m and not _COMPLETE.search(m.group(0)):
+            return m.group(0)
+    words = bare.split()
+    if words and words[-1] in _OPEN_WORDS:
+        return " ".join(words[-3:])
+    return None

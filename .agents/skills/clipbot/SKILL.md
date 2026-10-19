@@ -93,6 +93,18 @@ build `moments.json`, a top-level list in the order the reel should play:
 - Choose like an editor: one idea per moment, chronological, spread across the
   whole session, 20–60 s each, payoff first, no greetings or "can you see my
   screen". Total ≈ target minutes minus cards.
+- **End on the point, not on the setup.** Before you fix an `end`, read the
+  outline past it. If the last words are a lead-in ("and the cool thing is…",
+  "here's the thing", "what I love about it is", "for example", "let me show
+  you", a sentence ending in "and" or "the"), the payoff is in the next sentence:
+  move `end` past it, or pick an earlier end that closes a finished point. A
+  sentence boundary is not enough: "And the cool thing is." is a sentence to the
+  snapper and a cliffhanger to the viewer (Kyle on the Talk #4 reel, 2026-10-19:
+  clips "just got cut off" right before what "sounded like was gonna be a great
+  sound bite"). `clipbot` carries such an end on by itself, up to two sentences
+  or 20 s by the same speaker (`reel.finish_thought`), and leaves it where it was
+  when the payoff is further away or someone else answers; so the check is still
+  yours.
 - Every `clipbot reel` run writes its own choices to `out/<name>/moments.json`.
   The fastest revision loop is: run, edit that file with the user, re-run with
   `--moments`.
@@ -108,6 +120,12 @@ Open `out/<name>/plan.json` and check, in this order:
 3. For a reel: `output.reel` is present; card titles ≤ 80 chars and ≤ 4 lines of
    ≤ 120 chars; total of segments plus cards within ±20 % of the target.
 4. `source.captions.kind` matches reality (`embedded`, `srt` with a path, or `none`).
+
+5. Read the last sentence of every clip (the storyboard shows it, or the
+   captions at each clip's end). Each one must finish a point. A clip that stops
+   on a setup ("the cool thing is…", "here's what happened…", a question the
+   speaker is about to answer) gets its `end` moved past the payoff in
+   `moments.json`, then re-run.
 
 Show the user the cut list (id, `start–end`, takeaway) and the total length. An
 explicit "make the reel" already authorizes rendering; ask first only when the
