@@ -39,6 +39,12 @@ def words(seq, speaker=None):
     "For example,",
     "It turns out",
     "And you know what?",
+    # fillers and clauses before the setup (round-2 review)
+    "Um, the cool thing is.",
+    "Uh so what I love about it is",
+    "You know, the cool thing is",
+    "I think the cool thing is.",
+    "That is a good question, the cool thing is",
     "You get the.",
     "We hooked it up to Slack and",
     "The idea:",
@@ -71,6 +77,10 @@ def test_setups_dangle(text):
     "I wonder how fast it was.",
     "I don't know what the real reason was.",
     "That is the way things are.",
+    "This is the best part of the day.",
+    "Honestly this is my favorite part of the job.",
+    "This is the key part of it.",
+    "Here is the thing about it.",
     # Talk #4 clips 1 and 2 ended on finished points
     "See if it can house the videos as well as kind of have some sort of framework.",
     "It's like building a template of brand.",
@@ -90,7 +100,7 @@ COOL = words([
     (10.0, 10.4, "It"), (10.4, 10.8, "builds"), (10.8, 11.2, "the"), (11.2, 11.8, "site."),
     (12.2, 12.4, "And"), (12.4, 12.6, "the"), (12.6, 12.9, "cool"), (12.9, 13.2, "thing"), (13.2, 13.5, "is"),
     (14.1, 14.4, "it"), (14.4, 14.8, "hosts"), (14.8, 15.0, "it"), (15.0, 15.6, "too."),
-    (16.4, 16.8, "Next"), (16.8, 17.2, "question."),
+    (17.6, 18.0, "Next"), (18.0, 18.4, "question."),  # after a 2 s pause: a new run
 ])
 
 
@@ -112,11 +122,13 @@ def test_a_payoff_by_someone_else_or_out_of_reach_leaves_the_end_alone():
         [(14.0 + k, 14.9 + k, f"w{k}") for k in range(40)] + [(54.0, 54.5, "done.")])
     assert 54.5 - 13.5 > MAX_FINISH_SECONDS
     assert finish_thought(WordSnapper(far), 13.5) == 13.5
-    # two setups in a row and nothing finished within two sentences: stays put (a fixed point)
+    # setups in a row: the run carries on to the first finished sentence after them
     chain = words([(0, 0.5, "Here's"), (0.5, 1.0, "the"), (1.0, 1.5, "thing."), (2.0, 2.5, "The"), (2.5, 3.0, "trick"),
                    (3.0, 3.5, "is."), (4.0, 4.5, "Let"), (4.5, 4.8, "me"), (4.8, 5.0, "show"), (5.0, 5.5, "you."),
                    (6.0, 6.5, "Done.")])
-    assert finish_thought(WordSnapper(chain), 1.5) == 1.5
+    assert finish_thought(WordSnapper(chain), 1.5) == 6.5  # through the setups to "Done."
+    unfinished = chain[:-1]
+    assert finish_thought(WordSnapper(unfinished), 1.5) == 1.5  # no finished sentence in the run: stays put
 
 
 def test_cue_captions_carry_on_too():
@@ -136,15 +148,17 @@ def test_cue_captions_carry_on_too():
 
 
 def test_talk4_clip3_meet_captions_carry_on_through_the_claude_design_payoff():
-    # The shape of the source's captions around 14:20-15:00 (Meet, 4 s cues; texts as the
-    # verifier read them, cue times rounded): the setup sentence closes at 876 on a cue Meet
-    # left unattributed, and the payoff sentence runs to 900, 24 s later.
+    # The shape of the source's captions around 14:24-15:00 (Meet; texts as the verifier read
+    # them on the real recording, cue times rounded): the setup closes at 876 on a cue Meet left
+    # unattributed, an aside follows, and the payoff runs on to 900.
     cues = [
         Cue(864, 868, "The only difference was, and this is the cool part about", "Ramsey Jamoul"),
         Cue(868, 872, "uh clawed", "Ramsey Jamoul"),
         Cue(872, 876, "Jesus.", None),
-        Cue(876, 888, "When you hit design, it's like this other artifact type, a design and a design system,", "Ramsey Jamoul"),
-        Cue(888, 900, "and your design systems are like your brand kits, you can choose a design system.", "Ramsey Jamoul"),
+        Cue(876, 880, "I don't know how else to show it without just starting a new one.", "Ramsey Jamoul"),
+        Cue(880, 886, "When you hit design, it's like this other artifact type. It's not a document.", "Ramsey Jamoul"),
+        Cue(886, 892, "There's a design and a design system.", "Ramsey Jamoul"),
+        Cue(892, 900, "Your design systems are like your brand kits, you can choose a design system.", "Ramsey Jamoul"),
         Cue(900, 904, "Okay, cool.", "Kyle Tabor"),
     ]
     [m] = moments_from_specs([{"start": 864, "end": 868.2, "title": "Claude Design"}], cues)
@@ -172,3 +186,9 @@ def test_heuristic_windows_hold_the_payoff_cues():
     for w in ws:
         if w.start <= 4 < w.end:
             assert w.end >= 12 and 2 in w.cue_indexes  # never ends on the setup; the payoff cue is in
+
+
+def test_a_payoff_sentence_longer_than_eight_seconds_is_still_reached():
+    ws = words([(0, 0.5, "And"), (0.5, 1.0, "the"), (1.0, 1.4, "cool"), (1.4, 1.8, "thing"), (1.8, 2.0, "is."),
+                *[(2.3 + k, 3.2 + k, f"w{k}") for k in range(10)], (12.3, 12.8, "done.")])
+    assert finish_thought(WordSnapper(ws), 2.0) == 12.8

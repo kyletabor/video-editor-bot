@@ -247,7 +247,6 @@ def snapper_for(cues: list[Cue], words: list[Word] | None = None) -> WordSnapper
 
 MAX_FINISH_SECONDS = 30.0  # a setup line may carry the end this much further, to its payoff
 # (Talk #4 clip 3: the payoff ended 24 s after the setup's sentence end)
-MAX_FINISH_SENTENCES = 2
 
 
 def finish_thought(snapper: WordSnapper | Snapper, end: float) -> float:
@@ -255,22 +254,26 @@ def finish_thought(snapper: WordSnapper | Snapper, end: float) -> float:
 
     Talk #4 (Kyle, 2026-10-19): clips ended on "and the cool thing is..." and cut to
     the next card. The end was a clean sentence edge; the thought was not finished
-    (endings.py). While the last sentence dangles, the end moves to the end of the next
-    sentence by the same speaker, at most MAX_FINISH_SENTENCES sentences and
-    MAX_FINISH_SECONDS later. If the thought still is not finished within that reach,
-    the end stays where it was: a longer clip that still stops on a setup is no better,
-    and keeping the original makes the result a fixed point, so moments.json re-snaps
-    to itself either way.
+    (endings.py). When the last sentence dangles, the end follows the same speaker on
+    to the end of their run: sentence by sentence while the next one starts within
+    cuts.FINISH_GAP and ends within MAX_FINISH_SECONDS of `end`, stopping at a speaker
+    change or a pause. One sentence is not enough: on Talk #4 clip 3 the sentence after
+    "this is the cool part about Claude Design" was an aside ("I don't know how else
+    to show it...") and the payoff took the 20 s after it. The end lands on the last
+    finished sentence of that run; if none is, it stays where it was, so the result
+    is a fixed point and moments.json re-snaps to itself.
     """
-    out = end
-    for _ in range(MAX_FINISH_SENTENCES):
-        if not dangling(snapper.sentence_before(out)):
-            return out
-        nxt = snapper.next_end(out)
+    if not dangling(snapper.sentence_before(end)):
+        return end
+    out, best = end, None
+    while True:
+        nxt = snapper.next_end(out, end + MAX_FINISH_SECONDS - out)
         if nxt is None or nxt <= out or nxt - end > MAX_FINISH_SECONDS:
-            return end
+            break
         out = nxt
-    return out if not dangling(snapper.sentence_before(out)) else end
+        if not dangling(snapper.sentence_before(out)):
+            best = out
+    return best if best is not None else end
 
 
 def _snapper(cues: list[Cue], spans: list[Span] | None, snapper: WordSnapper | Snapper | None) -> WordSnapper | Snapper:
@@ -323,14 +326,14 @@ def candidate_windows(
             # cue's own end does not, so a long window is skipped, not the rest of the row.
             if dur > hi or dur < lo:
                 continue
-            s = total / max(dur, target_len)
-            if starts_clean:
-                s *= 1.15
-            if _ends_sentence(cues[j]) or j == n - 1 or cues[j + 1].speaker != cues[j].speaker:
-                s *= 1.15
             last = j  # the cues the window holds, the payoff's included (its takeaway reads them)
             while last + 1 < n and cues[last + 1].start < ends[j] - 1e-6:
                 last += 1
+            s = (total + sum(base[j + 1:last + 1])) / max(dur, target_len)
+            if starts_clean:
+                s *= 1.15
+            if _ends_sentence(cues[last]) or last == n - 1 or cues[last + 1].speaker != cues[last].speaker:
+                s *= 1.15
             w = Window(starts[i], ends[j], s, "", tuple(range(i, last + 1)))
             if shortest is None:
                 shortest = w

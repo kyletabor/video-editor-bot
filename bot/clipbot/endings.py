@@ -27,7 +27,10 @@ _NOUNS = (
     "advantage|upshot|bottom line|punchline|hack|cool part|nice part"
 )
 # Leading connectives a setup sentence may open with: "And so the cool thing is"
-_OPENER = r"^(?:(?:and|so|but|now|okay|ok|well|plus|because|then|like)[,]?\s+)*"
+# Meet captions keep the fillers ("Um, the cool thing is."), and a setup can follow a clause
+# ("That is a good question, the cool thing is"), so the anchor is the start or a comma.
+_OPENER = (r"(?:^|,\s*)(?:(?:and|so|but|now|okay|ok|well|plus|because|then|like|uh|um|you know|i mean|"
+           r"i think|honestly|actually|basically)[,]?\s+)*")
 _LEAD_INS = [
     # Anchored to the sentence start: "I don't know what the real reason was." is a finished point.
     re.compile(_OPENER + rf"(?:the|a|my|our|one|another|this|that|other)\s+(?:[\w'-]+\s+){{0,3}}(?:{_NOUNS})\s+"
@@ -36,7 +39,8 @@ _LEAD_INS = [
     # "Claude Design"); the payoff, what Claude Design does, was the next 24 s
     # "this is" points forward; "and that's the cool thing" points back at a finished point.
     re.compile(rf"\b(?:this|here)(?:'s| is)\s+(?:the|my|a|one|another)\s+(?:[\w'-]+\s+){{0,2}}(?:{_NOUNS})"
-               r"(?:\s+(?:about|of|with|in)(?:\s+(?:uh|um))?(?:\s+[\w'-]+){1,3})?$"),
+               # "about <a name>" only: "the best part of the day" and "the thing about it" are finished
+               r"(?:\s+about(?:\s+(?:uh|um))?(?!\s+(?:it|this|that|them|him|her|you)$)(?:\s+[\w'-]+){1,3})?$"),
     # "what I love about it is", "what's cool is", "the way it works is", "how it works is"
     # Anchored too: "I know where the file is." is not a setup.
     re.compile(_OPENER + r"(?:what(?:'s| is| was)?|the way|how)\b(?:\s+[\w'-]+){0,5}\s+(?:is|was)$"),
