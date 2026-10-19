@@ -22,6 +22,8 @@ def words(seq, speaker=None):
 @pytest.mark.parametrize("text", [
     # Talk #4, Ramsey's reel (2026-10-17), clip ends as transcribed from the reel
     "The only difference was, and this is the cool part.",  # clip 3: the Claude Design payoff came next
+    # clip 3 as Meet captioned it ("Claude Design" heard as "clawed Jesus")
+    "The only difference was, and this is the cool part about uh clawed Jesus.",
     "So it's going to start—",  # clip 4: cut mid-sentence
     "This is the way it coined—",  # clip 5
     "It writes the plan. And the cool thing is...",
@@ -36,6 +38,7 @@ def words(seq, speaker=None):
     "Let me show you.",
     "For example,",
     "It turns out",
+    "And you know what?",
     "You get the.",
     "We hooked it up to Slack and",
     "The idea:",
@@ -54,6 +57,20 @@ def test_setups_dangle(text):
     "I built the whole site with Claude in an afternoon.",
     "Here's the thing. It never forgets a step.",
     "And that's the cool thing.",
+    "This is the cool part about it working offline: it never phones home.",
+    # the independent review's false positives
+    "Who is it for?",
+    "Have you seen how big this one is?",
+    "That's what it's for.",
+    "What is it made of?",
+    "Something to look forward to.",
+    "I know where the file is.",
+    "We all know how good it is.",
+    "Tell me which one it is.",
+    "Not sure what the deal is.",
+    "I wonder how fast it was.",
+    "I don't know what the real reason was.",
+    "That is the way things are.",
     # Talk #4 clips 1 and 2 ended on finished points
     "See if it can house the videos as well as kind of have some sort of framework.",
     "It's like building a template of brand.",
@@ -90,8 +107,10 @@ def test_a_payoff_by_someone_else_or_out_of_reach_leaves_the_end_alone():
     other = words([(w.start, w.end, w.text) for w in COOL[:9]], "Ramsey") + \
         words([(w.start, w.end, w.text) for w in COOL[9:]], "Kyle")
     assert finish_thought(WordSnapper(other), 13.5) == 13.5  # Kyle answers: not Ramsey's payoff
-    far = words([(w.start, w.end, w.text) for w in COOL[:9]]) + words([(40.0, 40.5, "it"), (40.5, 41.0, "hosts.")])
-    assert 40.0 - 13.5 > MAX_FINISH_SECONDS
+    # a long run-on payoff: the sentence after the setup ends more than MAX_FINISH_SECONDS later
+    far = words([(w.start, w.end, w.text) for w in COOL[:9]]) + words(
+        [(14.0 + k, 14.9 + k, f"w{k}") for k in range(40)] + [(54.0, 54.5, "done.")])
+    assert 54.5 - 13.5 > MAX_FINISH_SECONDS
     assert finish_thought(WordSnapper(far), 13.5) == 13.5
     # two setups in a row and nothing finished within two sentences: stays put (a fixed point)
     chain = words([(0, 0.5, "Here's"), (0.5, 1.0, "the"), (1.0, 1.5, "thing."), (2.0, 2.5, "The"), (2.5, 3.0, "trick"),
@@ -114,3 +133,42 @@ def test_cue_captions_carry_on_too():
     assert m.end == finish_thought(snap, end)
     [again] = moments_from_specs([m.spec()], cues)
     assert again.end == m.end
+
+
+def test_talk4_clip3_meet_captions_carry_on_through_the_claude_design_payoff():
+    # The shape of the source's captions around 14:20-15:00 (Meet, 4 s cues; texts as the
+    # verifier read them, cue times rounded): the setup sentence closes at 876 on a cue Meet
+    # left unattributed, and the payoff sentence runs to 900, 24 s later.
+    cues = [
+        Cue(864, 868, "The only difference was, and this is the cool part about", "Ramsey Jamoul"),
+        Cue(868, 872, "uh clawed", "Ramsey Jamoul"),
+        Cue(872, 876, "Jesus.", None),
+        Cue(876, 888, "When you hit design, it's like this other artifact type, a design and a design system,", "Ramsey Jamoul"),
+        Cue(888, 900, "and your design systems are like your brand kits, you can choose a design system.", "Ramsey Jamoul"),
+        Cue(900, 904, "Okay, cool.", "Kyle Tabor"),
+    ]
+    [m] = moments_from_specs([{"start": 864, "end": 868.2, "title": "Claude Design"}], cues)
+    assert m.end == 900
+    [again] = moments_from_specs([m.spec()], cues)
+    assert again.end == m.end
+
+
+def test_a_payoff_after_a_silence_is_not_carried_into_the_clip():
+    cues = [Cue(0, 4, "We built the site.", "Ramsey"), Cue(4, 8, "And the cool thing is.", "Ramsey"),
+            Cue(22, 25, "Okay where was I.", "Ramsey")]
+    snap = Snapper(spans_for(cues))
+    assert finish_thought(snap, snap.end(7.5)) == snap.end(7.5)
+    ws = words([(0, 0.5, "And"), (0.5, 1.0, "the"), (1.0, 1.4, "cool"), (1.4, 1.8, "thing"), (1.8, 2.0, "is."),
+                (9.0, 9.5, "Anyway."), (9.6, 10.0, "Done.")])
+    assert finish_thought(WordSnapper(ws), 2.0) == 2.0
+
+
+def test_heuristic_windows_hold_the_payoff_cues():
+    from clipbot.reel import candidate_windows
+    cues = [Cue(0, 4, "So we pointed it at the recording.", "Ramsey"), Cue(4, 8, "And the cool thing is.", "Ramsey"),
+            Cue(8, 12, "it picked the best moments by itself.", "Ramsey"), Cue(12, 16, "Okay, thanks.", "Kyle")]
+    snap = Snapper(spans_for(cues))
+    ws = candidate_windows(cues, 6, 30, 10, snapper=snap)
+    for w in ws:
+        if w.start <= 4 < w.end:
+            assert w.end >= 12 and 2 in w.cue_indexes  # never ends on the setup; the payoff cue is in

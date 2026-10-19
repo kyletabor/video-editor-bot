@@ -102,7 +102,7 @@ build `moments.json`, a top-level list in the order the reel should play:
   snapper and a cliffhanger to the viewer (Kyle on the Talk #4 reel, 2026-10-19:
   clips "just got cut off" right before what "sounded like was gonna be a great
   sound bite"). `clipbot` carries such an end on by itself, up to two sentences
-  or 20 s by the same speaker (`reel.finish_thought`), and leaves it where it was
+  or 30 s by the same speaker (`reel.finish_thought`), and leaves it where it was
   when the payoff is further away or someone else answers; so the check is still
   yours.
 - Every `clipbot reel` run writes its own choices to `out/<name>/moments.json`.

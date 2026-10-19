@@ -125,6 +125,7 @@ SENTENCE_PAUSE = 0.45
 BREATH_PAUSE = 0.25  # fallback cut point when no sentence end is within reach
 MAX_EXTEND_END = 8.0  # an end moves at most this far forward to find a sentence end
 MAX_EXTEND_START = 6.0  # a start moves at most this far back to find a sentence start
+FINISH_GAP = 3.0  # a payoff (reel.finish_thought) follows its setup within this; later is a new start
 WORD_MARGIN = 0.05  # lead/tail air stops this far short of a neighbouring word
 # Acoustic speech edges (speech_spans). Words closer than RUN_GAP are one whisper span; a run
 # must keep VOICED_MARGIN of sound beside a silence for that silence to count as a pause.
@@ -257,6 +258,8 @@ class Snapper:
             return None
         here, nxt = self.spans[k], self.spans[k + 1]
         if here.speaker and nxt.speaker and here.speaker != nxt.speaker:
+            return None
+        if nxt.first - here.last > FINISH_GAP:  # after a silence the next sentence is a new start
             return None
         return nxt.end
 
@@ -423,7 +426,12 @@ class WordSnapper:
         j = i + 1
         if j >= len(ws) or (i >= 0 and not _same_speaker(ws[i], ws[j])):
             return None
-        return self._extend(j, ws[j].start)
+        if i >= 0 and ws[j].start - ws[i].end > FINISH_GAP:  # after a silence: a new start
+            return None
+        t = self._extend(j, ws[j].start)
+        k = self._last_word(t)
+        # only a real sentence end; the cap fallback (a breath) would stop mid-payoff
+        return t if k >= j and self._ends_sentence(k) else None
 
     # -- around the edges ----------------------------------------------------
     def speech_edges(self, start: float, end: float) -> tuple[float, float]:

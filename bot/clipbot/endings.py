@@ -22,18 +22,24 @@ import re
 
 # "the cool thing is", "and the best part was", "one big reason is", "the trick here is"
 _NOUNS = (
-    "thing|things|part|idea|trick|point|reason|key|secret|question|problem|catch|kicker|"
+    "thing|part|idea|trick|point|reason|key|secret|question|problem|catch|kicker|"
     "takeaway|difference|lesson|goal|plan|result|answer|bit|news|beauty|magic|insight|benefit|"
     "advantage|upshot|bottom line|punchline|hack|cool part|nice part"
 )
+# Leading connectives a setup sentence may open with: "And so the cool thing is"
+_OPENER = r"^(?:(?:and|so|but|now|okay|ok|well|plus|because|then|like)[,]?\s+)*"
 _LEAD_INS = [
-    re.compile(rf"\b(?:the|a|my|our|one|another|this|that|other)\s+(?:[\w'-]+\s+){{0,3}}(?:{_NOUNS})\s+"
+    # Anchored to the sentence start: "I don't know what the real reason was." is a finished point.
+    re.compile(_OPENER + rf"(?:the|a|my|our|one|another|this|that|other)\s+(?:[\w'-]+\s+){{0,3}}(?:{_NOUNS})\s+"
                r"(?:(?:here|there|about (?:it|this|that))\s+)?(?:is|was|being|are|were)$"),
-    # Talk #4 clip 3: "The only difference was, and this is the cool part." (the payoff came next)
+    # Talk #4 clip 3: "...and this is the cool part about uh clawed Jesus." (Meet's captions for
+    # "Claude Design"); the payoff, what Claude Design does, was the next 24 s
     # "this is" points forward; "and that's the cool thing" points back at a finished point.
-    re.compile(rf"\b(?:this|here)(?:'s| is)\s+(?:the|my|a|one|another)\s+(?:[\w'-]+\s+){{0,2}}(?:{_NOUNS})$"),
+    re.compile(rf"\b(?:this|here)(?:'s| is)\s+(?:the|my|a|one|another)\s+(?:[\w'-]+\s+){{0,2}}(?:{_NOUNS})"
+               r"(?:\s+(?:about|of|with|in)(?:\s+(?:uh|um))?(?:\s+[\w'-]+){1,3})?$"),
     # "what I love about it is", "what's cool is", "the way it works is", "how it works is"
-    re.compile(r"\b(?:what(?:'s| is| was)?|which|the way|how|why|where)\b(?:\s+[\w'-]+){0,5}\s+(?:is|was)$"),
+    # Anchored too: "I know where the file is." is not a setup.
+    re.compile(_OPENER + r"(?:what(?:'s| is| was)?|the way|how)\b(?:\s+[\w'-]+){0,5}\s+(?:is|was)$"),
     # "here's the thing", "here's what", "here is how"
     re.compile(r"\bhere(?:'s| is)(?:\s+(?:the\s+[\w'-]+|what|how|why|where|who|one|another|a))?$"),
     re.compile(r"\b(?:let me show you|i'll show you|i can show you|watch this|check this out|look at this|"
@@ -42,8 +48,9 @@ _LEAD_INS = [
                r"the answer is|it's basically|basically it's)$"),
 ]
 # A sentence cannot end on these, whatever the punctuation says ("...and it gives you the.")
-_OPEN_WORDS = {"and", "but", "or", "because", "the", "a", "an", "to", "of", "with", "for", "if",
-               "gonna", "into", "whether", "unless", "plus", "than"}
+# (Not "for", "to", "of", "with": "That's what it's for." is ordinary English.)
+_OPEN_WORDS = {"and", "but", "or", "because", "the", "a", "an", "if", "gonna", "whether", "unless", "plus", "than"}
+_RHETORICAL = re.compile(r"\b(?:you know what|guess what|and then what|know why)$")
 _OPEN_PUNCT = (":", "...", "…", "—", "–", "-", ",")
 # "that's what it is", "that's just how it was": a pronoun alone before is/was closes the thought
 _COMPLETE = re.compile(r"^(?:what|which|how|why|where|the way)\s+(?:it|that|this|he|she|they|you|we|i|things|life)"
@@ -75,6 +82,9 @@ def dangling(text: str) -> str | None:
         return (" ".join(tail.split()[-4:]) + sentence[len(tail):].strip()) or sentence
     bare = re.sub(r"[.!?]+$", "", sentence).strip().lower()
     bare = bare.replace("’", "'")
+    if sentence.endswith("?"):  # a question is a finished turn, unless the speaker asks it to answer it
+        m = _RHETORICAL.search(bare)
+        return m.group(0) if m else None
     for rx in _LEAD_INS:
         m = rx.search(bare)
         if m and not _COMPLETE.search(m.group(0)):
