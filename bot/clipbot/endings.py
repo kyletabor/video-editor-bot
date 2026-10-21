@@ -52,8 +52,10 @@ _LEAD_INS = [
                r"the answer is|it's basically|basically it's)$"),
     # Asides that hold the floor before the point (Talk #4 clip 3, after the setup: "I don't know
     # how else to show it without just starting a new one."); the payoff is still to come.
-    re.compile(_OPENER + r"(?:i don't know how (?:else )?to (?:show|explain|do)|where was i|hold on|one sec(?:ond)?|"
-               r"let me (?:just )?(?:find|pull|open|go back|scroll|share))\b"),
+    # "hold on" / "one sec" / "where was i" only as the whole sentence: "Hold on to your hats" is not one.
+    re.compile(r"^(?:(?:um|uh|okay|ok|so|and|oh)[,]?\s+)*(?:hold on|one sec(?:ond)?|where was i)$"),
+    re.compile(_OPENER + r"(?:i don't know how else to (?:show|explain|do)|"
+               r"let me (?:just )?(?:find|pull|open|scroll|share))\b"),
 ]
 # A sentence cannot end on these, whatever the punctuation says ("...and it gives you the.")
 # (Not "for", "to", "of", "with": "That's what it's for." is ordinary English.)

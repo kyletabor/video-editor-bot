@@ -40,6 +40,9 @@ def words(seq, speaker=None):
     "It turns out",
     "And you know what?",
     "I don't know how else to show it without just starting a new one.",  # an aside, Talk #4 clip 3
+    "Hold on.",
+    "Um, where was I.",
+    "Let me share my screen.",
     # fillers and clauses before the setup (round-2 review)
     "Um, the cool thing is.",
     "Uh so what I love about it is",
@@ -82,6 +85,12 @@ def test_setups_dangle(text):
     "Honestly this is my favorite part of the job.",
     "This is the key part of it.",
     "Here is the thing about it.",
+    # round-4 review: phrases that only look like asides
+    "Hold on to your hats, this is huge.",
+    "One second is all it takes.",
+    "I don't know how to do that.",
+    "I don't know how to explain how happy I am.",
+    "It works, hold on, it broke.",
     # Talk #4 clips 1 and 2 ended on finished points
     "See if it can house the videos as well as kind of have some sort of framework.",
     "It's like building a template of brand.",
