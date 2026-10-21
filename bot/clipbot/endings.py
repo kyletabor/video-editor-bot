@@ -29,7 +29,7 @@ _NOUNS = (
 # Leading connectives a setup sentence may open with: "And so the cool thing is"
 # Meet captions keep the fillers ("Um, the cool thing is."), and a setup can follow a clause
 # ("That is a good question, the cool thing is"), so the anchor is the start or a comma.
-_OPENER = (r"(?:^|,\s*)(?:(?:and|so|but|now|okay|ok|well|plus|because|then|like|uh|um|you know|i mean|"
+_OPENER = (r"(?:^|,\s*)(?:[-–—]\s*)?(?:(?:and|so|but|now|okay|ok|well|plus|because|then|like|uh|um|you know|i mean|"
            r"i think|honestly|actually|basically)[,]?\s+)*")
 _LEAD_INS = [
     # Anchored to the sentence start: "I don't know what the real reason was." is a finished point.
@@ -54,7 +54,9 @@ _LEAD_INS = [
     # how else to show it without just starting a new one."); the payoff is still to come.
     # "hold on" / "one sec" / "where was i" only as the whole sentence: "Hold on to your hats" is not one.
     re.compile(r"^(?:(?:um|uh|okay|ok|so|and|oh)[,]?\s+)*(?:hold on|one sec(?:ond)?|where was i)$"),
-    re.compile(_OPENER + r"(?:i don't know how else to (?:show|explain|do)|"
+    # Meet split clip 3's aside after "I don't know how": its caption sentence is "else to show it
+    # without just starting a new one.", so the "else to ..." fragment counts on its own too.
+    re.compile(_OPENER + r"(?:(?:i don't know how )?else to (?:show|explain|do)|"
                r"let me (?:just )?(?:find|pull|open|scroll|share))\b"),
 ]
 # A sentence cannot end on these, whatever the punctuation says ("...and it gives you the.")

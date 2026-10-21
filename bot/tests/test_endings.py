@@ -43,6 +43,7 @@ def words(seq, speaker=None):
     "Hold on.",
     "Um, where was I.",
     "Let me share my screen.",
+    "else to show it without just starting a new one.",  # the same aside as Meet's captions split it
     # fillers and clauses before the setup (round-2 review)
     "Um, the cool thing is.",
     "Uh so what I love about it is",
@@ -213,3 +214,24 @@ def test_one_sentence_not_the_whole_monologue():
                 (2.3, 2.7, "It"), (2.7, 3.1, "hosts"), (3.1, 3.3, "it"), (3.3, 3.7, "too."),
                 *[(4.3 + 2 * k, 5.6 + 2 * k, f"other{k}.") for k in range(12)]])
     assert finish_thought(WordSnapper(ws), 2.0) == 3.7
+
+
+def test_talk4_clip3_as_meet_actually_captioned_it():
+    # The cue texts around 14:24-14:52 as the verifier read them from the recording's embedded
+    # captions (2026-10-21): Meet lost "I don't know how" around the unattributed "Jesus. -" cue,
+    # so the aside's caption sentence starts at "else". The end must pass it and stop after the first
+    # payoff sentence ("...this other artifact type."), not run on to 904.
+    cues = [
+        Cue(864, 868, "The only difference was, and this is the cool part about", "Ramsey Jamoul"),
+        Cue(868, 872, "uh clawed", "Ramsey Jamoul"),
+        Cue(872, 876, "Jesus. -", None),
+        Cue(876, 880, "else to show it without just starting a new one.", "Ramsey Jamoul"),
+        Cue(880, 884, "When you hit design, it actually like It's like this other artifact type.", "Ramsey Jamoul"),
+        Cue(884, 888, "It's not a document. There's a design and a design system.", "Ramsey Jamoul"),
+        Cue(888, 892, "Your design systems are like your brand kits.", "Ramsey Jamoul"),
+        Cue(908, 912, "That's cool.", "Jim West"),
+    ]
+    [m] = moments_from_specs([{"start": 864, "end": 868.2, "title": "Claude Design"}], cues)
+    assert m.end == 884
+    [again] = moments_from_specs([m.spec()], cues)
+    assert again.end == 884
