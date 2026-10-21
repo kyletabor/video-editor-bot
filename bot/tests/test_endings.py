@@ -39,6 +39,7 @@ def words(seq, speaker=None):
     "For example,",
     "It turns out",
     "And you know what?",
+    "I don't know how else to show it without just starting a new one.",  # an aside, Talk #4 clip 3
     # fillers and clauses before the setup (round-2 review)
     "Um, the cool thing is.",
     "Uh so what I love about it is",
@@ -122,11 +123,11 @@ def test_a_payoff_by_someone_else_or_out_of_reach_leaves_the_end_alone():
         [(14.0 + k, 14.9 + k, f"w{k}") for k in range(40)] + [(54.0, 54.5, "done.")])
     assert 54.5 - 13.5 > MAX_FINISH_SECONDS
     assert finish_thought(WordSnapper(far), 13.5) == 13.5
-    # setups in a row: the run carries on to the first finished sentence after them
+    # setups in a row: on to the first finished sentence after them
     chain = words([(0, 0.5, "Here's"), (0.5, 1.0, "the"), (1.0, 1.5, "thing."), (2.0, 2.5, "The"), (2.5, 3.0, "trick"),
                    (3.0, 3.5, "is."), (4.0, 4.5, "Let"), (4.5, 4.8, "me"), (4.8, 5.0, "show"), (5.0, 5.5, "you."),
                    (6.0, 6.5, "Done.")])
-    assert finish_thought(WordSnapper(chain), 1.5) == 6.5  # through the setups to "Done."
+    assert finish_thought(WordSnapper(chain), 1.5) == 6.5  # past the setups to the first finished one
     unfinished = chain[:-1]
     assert finish_thought(WordSnapper(unfinished), 1.5) == 1.5  # no finished sentence in the run: stays put
 
@@ -147,7 +148,7 @@ def test_cue_captions_carry_on_too():
     assert again.end == m.end
 
 
-def test_talk4_clip3_meet_captions_carry_on_through_the_claude_design_payoff():
+def test_talk4_clip3_meet_captions_carry_on_to_the_claude_design_payoff():
     # The shape of the source's captions around 14:24-15:00 (Meet; texts as the verifier read
     # them on the real recording, cue times rounded): the setup closes at 876 on a cue Meet left
     # unattributed, an aside follows, and the payoff runs on to 900.
@@ -162,7 +163,10 @@ def test_talk4_clip3_meet_captions_carry_on_through_the_claude_design_payoff():
         Cue(900, 904, "Okay, cool.", "Kyle Tabor"),
     ]
     [m] = moments_from_specs([{"start": 864, "end": 868.2, "title": "Claude Design"}], cues)
-    assert m.end == 900
+    # One sentence (Kyle, 2026-10-21): past the aside to the payoff's first finished sentence,
+    # "When you hit design, it's like this other artifact type." (ends inside the 880-886 cue,
+    # so the safe cut is that cue's end).
+    assert m.end == 886
     [again] = moments_from_specs([m.spec()], cues)
     assert again.end == m.end
 
@@ -192,3 +196,11 @@ def test_a_payoff_sentence_longer_than_eight_seconds_is_still_reached():
     ws = words([(0, 0.5, "And"), (0.5, 1.0, "the"), (1.0, 1.4, "cool"), (1.4, 1.8, "thing"), (1.8, 2.0, "is."),
                 *[(2.3 + k, 3.2 + k, f"w{k}") for k in range(10)], (12.3, 12.8, "done.")])
     assert finish_thought(WordSnapper(ws), 2.0) == 12.8
+
+
+def test_one_sentence_not_the_whole_monologue():
+    # The round-3 review's case: a payoff, then a speaker who keeps talking with short pauses.
+    ws = words([(0, 0.5, "And"), (0.5, 1.0, "the"), (1.0, 1.4, "cool"), (1.4, 1.8, "thing"), (1.8, 2.0, "is."),
+                (2.3, 2.7, "It"), (2.7, 3.1, "hosts"), (3.1, 3.3, "it"), (3.3, 3.7, "too."),
+                *[(4.3 + 2 * k, 5.6 + 2 * k, f"other{k}.") for k in range(12)]])
+    assert finish_thought(WordSnapper(ws), 2.0) == 3.7

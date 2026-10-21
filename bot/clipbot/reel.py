@@ -250,30 +250,28 @@ MAX_FINISH_SECONDS = 30.0  # a setup line may carry the end this much further, t
 
 
 def finish_thought(snapper: WordSnapper | Snapper, end: float) -> float:
-    """Carry a sentence-end `end` on through the payoff when its sentence is a setup.
+    """Carry a sentence-end `end` on to the payoff when its sentence is a setup.
 
     Talk #4 (Kyle, 2026-10-19): clips ended on "and the cool thing is..." and cut to
     the next card. The end was a clean sentence edge; the thought was not finished
-    (endings.py). When the last sentence dangles, the end follows the same speaker on
-    to the end of their run: sentence by sentence while the next one starts within
-    cuts.FINISH_GAP and ends within MAX_FINISH_SECONDS of `end`, stopping at a speaker
-    change or a pause. One sentence is not enough: on Talk #4 clip 3 the sentence after
-    "this is the cool part about Claude Design" was an aside ("I don't know how else
-    to show it...") and the payoff took the 20 s after it. The end lands on the last
-    finished sentence of that run; if none is, it stays where it was, so the result
-    is a fixed point and moments.json re-snaps to itself.
+    (endings.py). When the last sentence dangles, the end moves to the FIRST finished
+    sentence after it by the same speaker (Kyle's pick, 2026-10-21: one sentence, so
+    clips stay short), passing over further setups and asides on the way, while each
+    next sentence starts within cuts.FINISH_GAP and ends within MAX_FINISH_SECONDS of
+    `end`. Following the speaker's whole run instead carried monologues up to 30 s past
+    the point. If no sentence finishes within reach, the end stays where it was, so the
+    result is a fixed point and moments.json re-snaps to itself.
     """
     if not dangling(snapper.sentence_before(end)):
         return end
-    out, best = end, None
+    out = end
     while True:
         nxt = snapper.next_end(out, end + MAX_FINISH_SECONDS - out)
         if nxt is None or nxt <= out or nxt - end > MAX_FINISH_SECONDS:
-            break
+            return end
         out = nxt
         if not dangling(snapper.sentence_before(out)):
-            best = out
-    return best if best is not None else end
+            return out
 
 
 def _snapper(cues: list[Cue], spans: list[Span] | None, snapper: WordSnapper | Snapper | None) -> WordSnapper | Snapper:
