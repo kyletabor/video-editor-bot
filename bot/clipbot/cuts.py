@@ -125,6 +125,7 @@ SENTENCE_PAUSE = 0.45
 BREATH_PAUSE = 0.25  # fallback cut point when no sentence end is within reach
 MAX_EXTEND_END = 8.0  # an end moves at most this far forward to find a sentence end
 MAX_EXTEND_START = 6.0  # a start moves at most this far back to find a sentence start
+FINISH_GAP = 1.5  # reel.finish_thought follows a speaker's run while sentences start within this of each other
 WORD_MARGIN = 0.05  # lead/tail air stops this far short of a neighbouring word
 # Acoustic speech edges (speech_spans). Words closer than RUN_GAP are one whisper span; a run
 # must keep VOICED_MARGIN of sound beside a silence for that silence to count as a pause.
@@ -160,6 +161,7 @@ class Span:
     first: float
     last: float
     text: str
+    speaker: str | None = None
 
     def contains_start(self, t: float) -> bool:
         return self.first <= t < self.last
@@ -180,7 +182,7 @@ def sentence_spans(words: list[Word]) -> list[Span]:
     def flush() -> None:
         if buf:
             out.append(Span(buf[0].safe_start, buf[-1].safe_end, buf[0].start, buf[-1].end,
-                            " ".join(w.text for w in buf)))
+                            " ".join(w.text for w in buf), buf[-1].speaker))
             buf.clear()
 
     for i, w in enumerate(words):
@@ -235,6 +237,38 @@ class Snapper:
 
     def snap(self, start: float, end: float) -> tuple[float, float]:
         return self.start(start), self.end(end)
+
+    # -- the thought an end closes (reel.finish_thought) ---------------------
+    def _ending_at(self, t: float) -> int | None:
+        """The sentence an end at `t` closes: the last one whose safe end is `t` (two sentences in
+        one caption cue share the cue's end), else the one `t` falls in."""
+        hit = None
+        for k, sp in enumerate(self.spans):
+            if abs(sp.end - t) <= 1e-3:
+                hit = k
+            elif hit is not None:
+                break
+            elif sp.contains_end(t):
+                return k
+        return hit
+
+    def sentence_before(self, t: float) -> str:
+        """The text of the sentence an end at `t` closes ("" in a gap)."""
+        k = self._ending_at(t)
+        return self.spans[k].text if k is not None else ""
+
+    def next_end(self, t: float, reach: float = 30.0) -> float | None:
+        """The end of the sentence after the one `t` closes, by the same speaker; None when
+        the next sentence is someone else's or there is none."""
+        k = self._ending_at(t)
+        if k is None or k + 1 >= len(self.spans):
+            return None
+        here, nxt = self.spans[k], self.spans[k + 1]
+        if here.speaker and nxt.speaker and here.speaker != nxt.speaker:
+            return None
+        if nxt.first - here.last > FINISH_GAP:  # after a silence the next sentence is a new start
+            return None
+        return nxt.end
 
 
 def snap_outward(start: float, end: float, spans: list[Span], max_snap: float = MAX_SNAP) -> tuple[float, float]:
@@ -371,6 +405,44 @@ class WordSnapper:
 
     def snap(self, start: float, end: float) -> tuple[float, float]:
         return self.start(start), self.end(end)
+
+    # -- the thought an end closes (reel.finish_thought) ---------------------
+    def _last_word(self, t: float) -> int:
+        """Index of the last word ending at or before `t` (-1: none)."""
+        ws = self.words
+        i = bisect_right(self._starts, t + _EPS) - 1
+        while i >= 0 and ws[i].end > t + _EPS:
+            i -= 1
+        return i
+
+    def sentence_before(self, t: float) -> str:
+        """The words of the sentence an end at `t` closes, back to its start."""
+        i = self._last_word(t)
+        if i < 0:
+            return ""
+        k = i
+        while not self._starts_sentence(k):
+            k -= 1
+        return " ".join(w.text for w in self.words[k:i + 1])
+
+    def next_end(self, t: float, reach: float = 30.0) -> float | None:
+        """Where the next sentence after `t` ends, when the same speaker says it and it ends within
+        `reach` of `t`; None when someone else speaks next, nothing follows, or it runs longer."""
+        ws = self.words
+        i = self._last_word(t)
+        j = i + 1
+        if j >= len(ws) or (i >= 0 and not _same_speaker(ws[i], ws[j])):
+            return None
+        if i >= 0 and ws[j].start - ws[i].end > FINISH_GAP:  # after a silence: a new start
+            return None
+        # A real sentence end only (not `end`'s 8 s breath fallback, which would stop mid-payoff),
+        # searched as far as the payoff may run: a payoff sentence can be longer than 8 s.
+        k = j
+        while k < len(ws) and ws[k].end <= t + reach + _EPS:
+            if self._ends_sentence(k):
+                return ws[k].end
+            k += 1
+        return None
 
     # -- around the edges ----------------------------------------------------
     def speech_edges(self, start: float, end: float) -> tuple[float, float]:

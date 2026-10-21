@@ -54,6 +54,7 @@ from .cuts import (
     tighten,
 )
 from . import story
+from .endings import dangling
 from .framing import MAX_CLOSING_CARDS, Framing
 from .lessons import (  # noqa: F401 - CARD_SECONDS / clip_text / limits are re-exported for callers and tests
     CARD_SECONDS,
@@ -244,6 +245,35 @@ def snapper_for(cues: list[Cue], words: list[Word] | None = None) -> WordSnapper
     return Snapper(spans_for(cues))
 
 
+MAX_FINISH_SECONDS = 30.0  # a setup line may carry the end this much further, to its payoff
+# (Talk #4 clip 3: the payoff ended 24 s after the setup's sentence end)
+
+
+def finish_thought(snapper: WordSnapper | Snapper, end: float) -> float:
+    """Carry a sentence-end `end` on to the payoff when its sentence is a setup.
+
+    Talk #4 (Kyle, 2026-10-19): clips ended on "and the cool thing is..." and cut to
+    the next card. The end was a clean sentence edge; the thought was not finished
+    (endings.py). When the last sentence dangles, the end moves to the FIRST finished
+    sentence after it by the same speaker (Kyle's pick, 2026-10-21: one sentence, so
+    clips stay short), passing over further setups and asides on the way, while each
+    next sentence starts within cuts.FINISH_GAP and ends within MAX_FINISH_SECONDS of
+    `end`. Following the speaker's whole run instead carried monologues up to 30 s past
+    the point. If no sentence finishes within reach, the end stays where it was, so the
+    result is a fixed point and moments.json re-snaps to itself.
+    """
+    if not dangling(snapper.sentence_before(end)):
+        return end
+    out = end
+    while True:
+        nxt = snapper.next_end(out, end + MAX_FINISH_SECONDS - out)
+        if nxt is None or nxt <= out or nxt - end > MAX_FINISH_SECONDS:
+            return end
+        out = nxt
+        if not dangling(snapper.sentence_before(out)):
+            return out
+
+
 def _snapper(cues: list[Cue], spans: list[Span] | None, snapper: WordSnapper | Snapper | None) -> WordSnapper | Snapper:
     """`snapper` wins; else a cue-based one from `spans` (or from the cues)."""
     if snapper is not None:
@@ -273,7 +303,7 @@ def candidate_windows(
         snapper = Snapper(spans)
     if snapper is not None:
         starts = [snapper.start(c.start) for c in cues]
-        ends = [snapper.end(c.end) for c in cues]
+        ends = [finish_thought(snapper, snapper.end(c.end)) for c in cues]
     else:
         starts = [c.start for c in cues]
         ends = [c.end for c in cues]
@@ -286,18 +316,23 @@ def candidate_windows(
         for j in range(i, n):
             if j > i and (cues[j].start < cues[j - 1].start or cues[j].start - cues[j - 1].end > MAX_GAP):
                 break
-            dur = ends[j] - starts[i]
-            if dur > hi:
+            if cues[j].start - starts[i] > hi:
                 break
+            dur = ends[j] - starts[i]
             total += base[j]
-            if dur < lo:
+            # An end finish_thought carried on (to a payoff) can pass `hi` while the next
+            # cue's own end does not, so a long window is skipped, not the rest of the row.
+            if dur > hi or dur < lo:
                 continue
-            s = total / max(dur, target_len)
+            last = j  # the cues the window holds, the payoff's included (its takeaway reads them)
+            while last + 1 < n and cues[last + 1].start < ends[j] - 1e-6:
+                last += 1
+            s = (total + sum(base[j + 1:last + 1])) / max(dur, target_len)
             if starts_clean:
                 s *= 1.15
-            if _ends_sentence(cues[j]) or j == n - 1 or cues[j + 1].speaker != cues[j].speaker:
+            if _ends_sentence(cues[last]) or last == n - 1 or cues[last + 1].speaker != cues[last].speaker:
                 s *= 1.15
-            w = Window(starts[i], ends[j], s, "", tuple(range(i, j + 1)))
+            w = Window(starts[i], ends[j], s, "", tuple(range(i, last + 1)))
             if shortest is None:
                 shortest = w
             if best is None or s > best.score:
@@ -525,6 +560,8 @@ def moments_from_specs(
         start, end = snapper.snap(asked_start, asked_end)
         if end <= start:  # words only: a request that touches no word collapses; keep what was asked
             start, end = asked_start, asked_end
+        else:
+            end = finish_thought(snapper, end)
         idx = tuple(i for i, c in enumerate(cues) if c.end > start and c.start < end)
         lines = spec.get("lines") or ()
         if isinstance(lines, str):
