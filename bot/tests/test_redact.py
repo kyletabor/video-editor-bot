@@ -204,6 +204,7 @@ def test_find_sensitive_kinds(text, why):
     "1234567890123",  # an order number: 13 digits with no separators is not a phone
     "Pipeline", "2026-10-03", "github.com/kyletabor/video-editor-bot", "transcription_pipeline_overview",
     # what a viewer should see (Kyle, Talk #5): the bot's own name, generic task text, a bare site
+    "example.com/about?lang=en", "youtube.com/watch?v=abc", "example.com/blog/2026/how-to-build",
     "Vince Vega", "Dr. Eggbot", "Submit marketing by Friday", "asana.com", "Q3 roadmap", "10 tasks",
 ])
 def test_find_sensitive_leaves_ordinary_text(text):
@@ -692,3 +693,12 @@ def test_cli_redact_defaults_to_auto_and_reel_takes_bare_redact():
     assert p.parse_args(["--redact"]).redact == "auto"
     assert p.parse_args([]).redact is None
     assert p.parse_args(["--redact", "boxes.json", "--allow-large-blur"]).allow_large_blur is True
+
+
+def test_large_blurs_stays_fast_with_hundreds_of_big_boxes():
+    import time
+    rs = [Redaction(k * 0.5, k * 0.5 + 3, (0, 0, 1900, 1000)) for k in range(500)]
+    rs += [Redaction(k * 0.5, k * 0.5 + 3, (k % 1800, 500, 400, 300)) for k in range(500)]
+    t0 = time.perf_counter()
+    assert rd.large_blurs(rs, 1920, 1080)
+    assert time.perf_counter() - t0 < 2

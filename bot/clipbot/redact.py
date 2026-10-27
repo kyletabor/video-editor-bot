@@ -122,11 +122,12 @@ SENSITIVE: dict[str, re.Pattern[str]] = {
     "money": re.compile(
         r"(?<![\w$])(?:[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB]\b)?|\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|dollars)\b)"
     ),
-    # A link that points at one record: a path segment carrying an ID (6+ characters with a digit), or a
-    # query or fragment. A bare site or a repo path ("asana.com", "github.com/owner/repo") stays readable.
+    # A link that points at one record: a path segment that is an ID (6+ letters or digits, at least one digit,
+    # no hyphens: not a slug), or a query or fragment holding a digit. A bare site, a repo path or a page
+    # ("asana.com", "github.com/owner/repo", "youtube.com/watch?v=abc", "blog/how-to-2026") stays readable.
     "url": re.compile(
         r"(?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s]*)?"
-        r"(?:/(?=[^\s/?#]*\d)[^\s/?#]{6,}|[?#][^\s]+)[^\s]*",
+        r"(?:/(?=\w*\d)\w{6,}(?![\w.-])|[?#](?=\S*\d)\S+)\S*",
         re.I,
     ),
     # A long unbroken run of letters and digits with both in it: a token, a password, a hash.
@@ -247,22 +248,33 @@ def write_redactions(path: str | Path, redactions: list[Redaction]) -> None:
 
 # ----------------------------------------------------------------- applying: ffmpeg
 
-def coverage(redactions: list[Redaction], width: int, height: int, *, grid: int = 8) -> list[tuple[float, float, float]]:
+def coverage(redactions: list[Redaction], width: int, height: int, *, grid: int = 8,
+             share: float | None = None) -> list[tuple[float, float, float]]:
     """(start, end, share of the frame blurred) for each stretch where the boxes
     active together change: the union of their area, counted on a `grid`-pixel
-    lattice so overlapping boxes are not counted twice."""
+    lattice so overlapping boxes are not counted twice. With `share`, a stretch
+    whose boxes cannot reach it (their areas summed) or that one box alone passes
+    is not counted cell by cell: the summed or largest share stands in, which is
+    all a threshold check needs and keeps hundreds of boxes fast."""
     cols, rows = -(-width // grid), -(-height // grid)
+    frame = float(width * height)
     edges = sorted({t for r in redactions for t in (r.start, r.end)})
     out: list[tuple[float, float, float]] = []
     for a, b in zip(edges, edges[1:]):
         live = [r.box for r in redactions if r.start < b and r.end > a]
         if not live:
             continue
-        cells: set[tuple[int, int]] = set()
+        if share is not None:
+            areas = [w * h / frame for _, _, w, h in live]
+            if sum(areas) <= share or max(areas) > share:
+                out.append((a, b, min(1.0, sum(areas)) if sum(areas) <= share else max(areas)))
+                continue
+        cells = bytearray(cols * rows)
         for x, y, w, h in live:
+            c0, c1 = x // grid, min(cols, -(-(x + w) // grid))
             for cy in range(y // grid, min(rows, -(-(y + h) // grid))):
-                cells.update((cx, cy) for cx in range(x // grid, min(cols, -(-(x + w) // grid))))
-        out.append((a, b, len(cells) / (cols * rows)))
+                cells[cy * cols + c0:cy * cols + c1] = b"\x01" * (c1 - c0)
+        out.append((a, b, cells.count(1) / (cols * rows)))
     return out
 
 
@@ -271,7 +283,7 @@ def large_blurs(redactions: list[Redaction], width: int, height: int,
     """The stretches where the blur covers more than `share` of the frame,
     neighbours joined: (start, end, largest share in it)."""
     out: list[tuple[float, float, float]] = []
-    for a, b, s in coverage(redactions, width, height):
+    for a, b, s in coverage(redactions, width, height, share=share):
         if s <= share:
             continue
         if out and a <= out[-1][1]:
