@@ -204,7 +204,7 @@ def test_find_sensitive_kinds(text, why):
     "1234567890123",  # an order number: 13 digits with no separators is not a phone
     "Pipeline", "2026-10-03", "github.com/kyletabor/video-editor-bot", "transcription_pipeline_overview",
     # what a viewer should see (Kyle, Talk #5): the bot's own name, generic task text, a bare site
-    "example.com/about?lang=en", "youtube.com/watch?v=abc", "example.com/blog/2026/how-to-build",
+    "example.com/about?lang=en", "youtube.com/watch?v=abc", "example.com/2026/recap",
     "Vince Vega", "Dr. Eggbot", "Submit marketing by Friday", "asana.com", "Q3 roadmap", "10 tasks",
 ])
 def test_find_sensitive_leaves_ordinary_text(text):
