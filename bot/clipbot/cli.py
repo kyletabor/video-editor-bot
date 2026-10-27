@@ -301,7 +301,8 @@ def cmd_reel(a: argparse.Namespace) -> int:
         try:
             copy, _ = redactmod.run(
                 info.path, a.redact, shown, out_dir, terms_file=a.redact_terms, every=a.redact_every,
-                duration=info.duration_seconds, ocr=a.redact_ocr, log=lambda msg: print(msg, file=sys.stderr),
+                duration=info.duration_seconds, ocr=a.redact_ocr, allow_large=a.allow_large_blur,
+                log=lambda msg: print(msg, file=sys.stderr),
             )
         except Exception:
             if out_path.is_file():
@@ -481,7 +482,8 @@ def cmd_redact(a: argparse.Namespace) -> int:
         every = a.every if a.every is not None else 2.0
     copy, redactions = redactmod.run(
         info.path, a.redact, spans, out_dir, terms_file=a.terms, every=every,
-        duration=info.duration_seconds, ocr=a.ocr, log=lambda msg: print(msg, file=sys.stderr),
+        duration=info.duration_seconds, ocr=a.ocr, allow_large=a.allow_large_blur,
+        log=lambda msg: print(msg, file=sys.stderr),
     )
     for r in redactions:
         print(f"{_hms(r.start)}-{_hms(r.end)}\t{r.box[0]},{r.box[1]} {r.box[2]}x{r.box[3]}\t{r.why or 'manual'}")
@@ -570,17 +572,23 @@ OCR_HELP = ("OCR for auto/text: vision (Apple Vision: macOS and the vision extra
             "text), tesseract (on PATH), or auto (default): vision when it loads, else tesseract")
 
 
+LARGE_HELP = (f"apply a redactions file even where its boxes cover more than {redactmod.LARGE_SHARE:.0%}% of the frame "
+              "(refused by default: blur the private words, not the screen; docs/redaction.md)")
+
+
 def add_redact_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--redact", default=None, metavar="auto|text|FILE",
+    p.add_argument("--redact", nargs="?", const="auto", default=None, metavar="auto|text|FILE",
                    help="blur private details on screen in a redacted copy of the source the plan then names: "
-                        "auto (OCR: e-mail addresses, phone numbers, keys, card numbers, --redact-terms), text (every "
-                        "line of text) or a redactions.json [{start, end, box: [x, y, w, h], why}]. auto/text need OCR (--redact-ocr)")
+                        "auto, the default when --redact has no value (OCR: the private words only: e-mail addresses, "
+                        "phone numbers, keys, card numbers, money, record links, --redact-terms), text (every line of "
+                        "text) or a redactions.json [{start, end, box: [x, y, w, h], why}]. auto/text need OCR (--redact-ocr)")
     p.add_argument("--redact-terms", default=None,
                    help="text file, one name or phrase per line (re: for a regex), blurred too with --redact auto")
     p.add_argument("--redact-ocr", default="auto", choices=redactmod.OCR_ENGINES,
                    help=OCR_HELP)
     p.add_argument("--redact-every", type=float, default=redactmod.EVERY_SECONDS,
                    help=f"seconds between the frames --redact auto/text reads inside each moment (default {redactmod.EVERY_SECONDS:g})")
+    p.add_argument("--allow-large-blur", action="store_true", help=LARGE_HELP)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -672,9 +680,11 @@ def main(argv: list[str] | None = None) -> int:
 
     prd = sub.add_parser("redact", help="blur private details on screen in a copy of the source (and point a plan at it)")
     prd.add_argument("--source", required=True)
-    prd.add_argument("--redact", required=True, metavar="auto|text|FILE",
-                     help="auto: OCR the frames and blur e-mail addresses, phone numbers, keys, card numbers and "
-                          "--terms; text: blur every line of text; FILE: redactions.json [{start, end, box: [x, y, w, h], why}]")
+    prd.add_argument("--redact", default="auto", metavar="auto|text|FILE",
+                     help="auto (the default): OCR the frames and blur the private words only: e-mail addresses, phone "
+                          "numbers, keys, card numbers, money, record links and --terms; text: blur every line of text; "
+                          "FILE: redactions.json [{start, end, box: [x, y, w, h], why}]")
+    prd.add_argument("--allow-large-blur", action="store_true", help=LARGE_HELP)
     prd.add_argument("--ocr", default="auto", choices=redactmod.OCR_ENGINES,
                      help=OCR_HELP)
     prd.add_argument("--plan", default=None, help="read only this plan's segments, then point the plan at the copy")

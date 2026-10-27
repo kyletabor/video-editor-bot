@@ -4,6 +4,7 @@ Every name, address and number below is made up (example.com, 555-01xx phone
 numbers, the standard Visa test card): nothing here comes from a recording.
 """
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -186,6 +187,13 @@ def test_find_sensitive_boxes_only_the_private_part_of_a_line():
     ("+1 415 555 0142", "phone"),
     ("4155550142", "phone"),
     ("Zx9Qp2Lm7Rt4Vb8Nc1Kd6Hf3", "token"),
+    ("$12,400", "money"),
+    ("$4.5M", "money"),
+    ("€300", "money"),
+    ("12,000 USD", "money"),
+    ("app.asana.com/0/1203344556/list", "url"),
+    ("https://example.com/invoice?id=77", "url"),
+    ("docs.example.com/d/1AbC9xYz/edit", "url"),
 ])
 def test_find_sensitive_kinds(text, why):
     assert why in [w for _, w in rd.find_sensitive(line_words("value:", text))]
@@ -195,6 +203,9 @@ def test_find_sensitive_kinds(text, why):
     "4111-1111-1111-1112",  # fails the Luhn check: a part number, not a card
     "1234567890123",  # an order number: 13 digits with no separators is not a phone
     "Pipeline", "2026-10-03", "github.com/kyletabor/video-editor-bot", "transcription_pipeline_overview",
+    # what a viewer should see (Kyle, Talk #5): the bot's own name, generic task text, a bare site
+    "example.com/about?lang=en", "youtube.com/watch?v=abc", "example.com/2026/recap",
+    "Vince Vega", "Dr. Eggbot", "Submit marketing by Friday", "asana.com", "Q3 roadmap", "10 tasks",
 ])
 def test_find_sensitive_leaves_ordinary_text(text):
     assert rd.find_sensitive(line_words("see", text)) == []
@@ -646,3 +657,48 @@ def test_vision_frame_recycles_workers_and_retries_a_failed_frame_once(monkeypat
         assert rd.vision_frame([Path("a.png")], [(0, 0, 10, 10)])
     # worker 1 failed on its 3rd frame -> a fresh worker read it; that one is replaced after 3 frames
     assert len(made) == 3 and [w.done for w in made] == [2, 3, 1]
+
+
+# ----------------------------------------------------------------- whole-screen guard
+
+def test_coverage_counts_overlapping_boxes_once():
+    rs = [Redaction(0, 10, (0, 0, 80, 80)), Redaction(0, 10, (40, 0, 80, 80)), Redaction(5, 10, (0, 80, 160, 80))]
+    assert rd.coverage(rs, 160, 160) == [(0, 5, 0.375), (5, 10, 0.875)]
+
+
+def test_large_blurs_finds_and_joins_the_whole_screen_stretches():
+    words = [Redaction(0, 30, (100, 100, 60, 16))]
+    pane = [Redaction(10, 20, (0, 0, 1000, 1080)), Redaction(20, 25, (0, 0, 1400, 1080))]
+    assert rd.large_blurs(words, 1920, 1080) == []
+    found = rd.large_blurs(words + pane, 1920, 1080)
+    assert len(found) == 1 and found[0][:2] == (10, 25) and found[0][2] > 0.7
+
+
+@needs_ffmpeg
+def test_run_refuses_a_file_that_blurs_the_whole_screen_unless_allowed(tmp_path):
+    src = _make_source(tmp_path)
+    spec = tmp_path / "boxes.json"
+    spec.write_text(json.dumps([{"start": 1, "end": 2, "box": [0, 0, 300, 220], "why": "whole pane"}]))
+    with pytest.raises(ValueError, match="Blur the private words, not the screen"):
+        rd.run(src, str(spec), [(0, 4)], tmp_path / "out", duration=4.0)
+    assert not (tmp_path / "out" / "talk.redacted.mp4").exists()
+    logs: list[str] = []
+    copy, _ = rd.run(src, str(spec), [(0, 4)], tmp_path / "out", duration=4.0, allow_large=True, log=logs.append)
+    assert copy and copy.is_file() and any("warning" in m for m in logs)
+
+
+def test_cli_redact_defaults_to_auto_and_reel_takes_bare_redact():
+    p = argparse.ArgumentParser()
+    cli.add_redact_args(p)
+    assert p.parse_args(["--redact"]).redact == "auto"
+    assert p.parse_args([]).redact is None
+    assert p.parse_args(["--redact", "boxes.json", "--allow-large-blur"]).allow_large_blur is True
+
+
+def test_large_blurs_stays_fast_with_hundreds_of_big_boxes():
+    import time
+    rs = [Redaction(k * 0.5, k * 0.5 + 3, (0, 0, 1900, 1000)) for k in range(500)]
+    rs += [Redaction(k * 0.5, k * 0.5 + 3, (k % 1800, 500, 400, 300)) for k in range(500)]
+    t0 = time.perf_counter()
+    assert rd.large_blurs(rs, 1920, 1080)
+    assert time.perf_counter() - t0 < 2
