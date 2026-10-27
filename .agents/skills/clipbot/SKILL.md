@@ -134,6 +134,25 @@ explicit "make the reel" already authorizes rendering; ask first only when the
 request was ambiguous or the list looks wrong (a 5-second clip, a moment from the
 intro chatter, two clips saying the same thing).
 
+## Blurring shared screens
+
+Screens in a reel are there so viewers see how the tool works: blur the
+private **words**, never the whole screen ([docs/redaction.md](../../../docs/redaction.md)).
+
+- Use `--redact` (auto) plus a `--redact-terms` file of the people, clients,
+  companies, projects and places on screen, OCR misreadings included. Start
+  from the last talk's terms file.
+- Hide: real people other than the presenters, customer and client names,
+  money, personal details (a child, a personal inbox, health, home, town),
+  e-mail addresses, phones, keys, and links or IDs that point at one record.
+- Keep: the presenters' bots, their names and avatars, generic task and chat
+  text ("Submit marketing by Friday"), product names, menus, the app's layout.
+- Hand-drawn boxes are word- or line-sized. The run refuses boxes covering
+  more than 40% of the frame; pass `--allow-large-blur` only for a screen
+  that is private edge to edge, and say so in the report.
+- Then run `clipbot check-redaction` and look at every distinct screen
+  zoomed in: each sensitive word is gone, and the screen is still readable.
+
 ## Render and verify
 
 - `--render` (or `cliprender` directly) prints one `<id>\t<path>\t<seconds>` row

@@ -81,9 +81,12 @@ uv run --project bot clipbot reel --source path/to/session.mp4 --minutes 4 --ren
   ([docs/styles.md](docs/styles.md)). Pipeline AI Talks videos use `--style pipeline`, or
   `--style aoi --theme aoi` for Day One AI's Art of Intelligence look (the same music).
   Edited the cards by hand afterwards? `clipbot score PLAN --style NAME` re-scores the music.
-- Shared screens with private details? `--redact auto` blurs e-mail addresses, phone numbers,
-  keys and names you list (needs tesseract); `--redact text` blurs all on-screen text, and
-  `clipbot redact --plan PLAN` does it for an existing plan ([bot/README.md](bot/README.md#blurring-private-details-on-screen-clipbotredactpy)).
+- Shared screens with private details? `--redact` (auto) blurs only the private words: e-mail
+  addresses, phone numbers, keys, money, record links and the names, clients and places you
+  list in `--redact-terms`. The rest of the screen stays readable, and a hand-drawn box that
+  covers most of the frame is refused. [docs/redaction.md](docs/redaction.md) lists what to
+  hide and what to keep. `clipbot redact --plan PLAN` does the same for an existing plan
+  ([bot/README.md](bot/README.md#blurring-private-details-on-screen-clipbotredactpy)).
 
 ### 4. Pick the moments yourself
 

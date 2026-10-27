@@ -303,12 +303,26 @@ uv run --project bot clipbot reel --source talk.mp4 --minutes 4 --redact boxes.j
   case-insensitive, `re:` for a regular expression). A word seen at one sample
   is blurred from the sample before to the sample after; a frame that has not
   changed since the last sample is not read twice.
+  Money amounts ("$12,400", "4.5M USD") and links that carry an ID
+  ("app.asana.com/0/1203344556/list", "...?id=77") are blurred too; a bare
+  site or a repo path is not. `--redact` with no value means `auto`, and so
+  does `clipbot redact` without `--redact`.
 - **`text`** blurs every line of text OCR finds: the automatic version of
-  blurring the whole shared screen.
+  blurring the whole shared screen. It is rarely right for a reel (below).
 - **A file** applies boxes drawn by hand: `[{"start": "12:30", "end": "13:05",
   "box": [x, y, w, h], "why": "screen share"}]`, times in seconds or h:mm:ss,
   the box in source pixels (find them on a frame grab:
   `ffmpeg -ss 12:40 -i talk.mp4 -frames:v 1 frame.png`).
+
+**Blur the words, not the screen.** A reel shows how a tool works; a screen
+under one big blur shows nothing (Talk #5's first draft hid whole panes, bot
+names and all). [docs/redaction.md](../docs/redaction.md) is the rule, with
+examples of what to hide (people, clients, money, personal details, contact
+details, record links) and what to keep (the presenters' bots and their names,
+generic task text, the app's layout). A redactions file whose boxes cover more
+than 40% of the frame at once (`LARGE_SHARE`) is refused, with the time ranges
+named; `--allow-large-blur` applies it anyway, for a screen that really is
+private from edge to edge. `text` and `auto` only warn.
 
 Where two neighbouring samples differ a lot (a scroll, a page switch) the bot takes
 more samples in between, down to one frame apart, so a moving word is boxed where it is
@@ -367,9 +381,10 @@ rendering an unblurred reel. OCR is not perfect (tiny or
 low-contrast text, images of text, handwriting), and the patterns are a net,
 not a guarantee: a street address, a name not in `--redact-terms`, a number
 written as words or a phone number with no separators and a country code
-(`14155550142`) is not caught. Use `text` or a hand-drawn box when a screen is
-sensitive throughout, and the presenter still watches the reel before it is
-shared.
+(`14155550142`) is not caught: add such words to `--redact-terms`, or box
+the one line by hand. Then look at every distinct screen of the reel zoomed
+in: each sensitive word gone and the screen still readable. The presenter
+still watches the reel before it is shared.
 
 ## Rendering
 

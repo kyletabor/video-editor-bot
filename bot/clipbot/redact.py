@@ -91,6 +91,7 @@ SAME_FRAME_DIFF = 8  # a sample whose thumbnail differs by this much anywhere is
 CHECK_EVERY = 0.5  # seconds between the frames of the redacted copy that `run` reads back
 CHECK_SCALE = 4  # the check reads tiles larger than detection (3x): a reel enlarges the screen, and Talk #3's
 # reel showed a client's name that 3x reads of the blurred copy had missed
+LARGE_SHARE = 0.4  # boxes covering more of the frame than this at once hide how the tool works (Kyle, Talk #5)
 CHECK_ROUNDS = 2  # detect -> blur -> read the copy -> blur what is still readable, at most this often
 STILL_SHARE = 0.01  # under this share changed: the same screen (a speaker tile alone stays under it)
 REREAD_SECONDS = 3.0  # a still screen is OCR'd again this often; OCR misses differ frame to frame
@@ -116,6 +117,17 @@ SENSITIVE: dict[str, re.Pattern[str]] = {
     "key": re.compile(
         r"(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}"
         r"|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*)"
+    ),
+    # Money: a revenue line, a price, an account balance. "$1,200", "$4.5M", "12,000 USD".
+    "money": re.compile(
+        r"(?<![\w$])(?:[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB]\b)?|\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|dollars)\b)"
+    ),
+    # A link that points at one record: a path segment carrying an ID (6+ characters with a digit), or a
+    # query or fragment. A bare site or a repo path ("asana.com", "github.com/owner/repo") stays readable.
+    "url": re.compile(
+        r"(?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s]*)?"
+        r"(?:/(?=[^\s/?#]*\d)[^\s/?#]{6,}|[?#][^\s]+)[^\s]*",
+        re.I,
     ),
     # A long unbroken run of letters and digits with both in it: a token, a password, a hash.
     "token": re.compile(r"(?<![\w/])(?=[A-Za-z0-9_\-+/=]*\d)(?=[A-Za-z0-9_\-+/=]*[A-Za-z])[A-Za-z0-9_\-+/=]{24,}(?![\w/])"),
@@ -234,6 +246,40 @@ def write_redactions(path: str | Path, redactions: list[Redaction]) -> None:
 
 
 # ----------------------------------------------------------------- applying: ffmpeg
+
+def coverage(redactions: list[Redaction], width: int, height: int, *, grid: int = 8) -> list[tuple[float, float, float]]:
+    """(start, end, share of the frame blurred) for each stretch where the boxes
+    active together change: the union of their area, counted on a `grid`-pixel
+    lattice so overlapping boxes are not counted twice."""
+    cols, rows = -(-width // grid), -(-height // grid)
+    edges = sorted({t for r in redactions for t in (r.start, r.end)})
+    out: list[tuple[float, float, float]] = []
+    for a, b in zip(edges, edges[1:]):
+        live = [r.box for r in redactions if r.start < b and r.end > a]
+        if not live:
+            continue
+        cells: set[tuple[int, int]] = set()
+        for x, y, w, h in live:
+            for cy in range(y // grid, min(rows, -(-(y + h) // grid))):
+                cells.update((cx, cy) for cx in range(x // grid, min(cols, -(-(x + w) // grid))))
+        out.append((a, b, len(cells) / (cols * rows)))
+    return out
+
+
+def large_blurs(redactions: list[Redaction], width: int, height: int,
+                share: float = LARGE_SHARE) -> list[tuple[float, float, float]]:
+    """The stretches where the blur covers more than `share` of the frame,
+    neighbours joined: (start, end, largest share in it)."""
+    out: list[tuple[float, float, float]] = []
+    for a, b, s in coverage(redactions, width, height):
+        if s <= share:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], b, max(out[-1][2], s))
+        else:
+            out.append((a, b, s))
+    return out
+
 
 def mask_timeline(redactions: list[Redaction], duration: float, frame: float) -> list[tuple[float, float, tuple]]:
     """[0, duration] cut into intervals, each with the boxes blurred during it
@@ -963,11 +1009,16 @@ def redacted_path(source: str | Path, out_dir: str | Path) -> Path:
 
 def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir: str | Path, *,
         terms_file: str | None = None, every: float = EVERY_SECONDS, duration: float | None = None,
-        ocr: str = "auto", log=lambda msg: None) -> tuple[Path | None, list[Redaction]]:
+        ocr: str = "auto", allow_large: bool = False, log=lambda msg: None) -> tuple[Path | None, list[Redaction]]:
     """`--redact MODE`: `auto` (private details), `text` (every line of text) or
     a redactions.json path. Writes redactions.json in `out_dir` and the redacted
     copy next to it; returns (copy, redactions), copy None when nothing needed
-    blurring (the plan then keeps the original)."""
+    blurring (the plan then keeps the original).
+
+    A redactions file whose boxes cover more than LARGE_SHARE of the frame at
+    once is refused unless `allow_large`: on Talk #5 hand-drawn boxes over whole
+    panes left nothing to see, where blurring the words (`auto` and terms) keeps
+    the screen readable. `text` and `auto` only warn."""
     info = video_info(source)
     terms = compile_terms(Path(terms_file).read_text(encoding="utf-8").splitlines()) if terms_file else []
     if mode in ("auto", "text"):
@@ -977,6 +1028,16 @@ def run(source: str | Path, mode: str, spans: list[tuple[float, float]], out_dir
         if terms_file:
             log("redact: --redact-terms ignored: a redactions file is applied as written")
         redactions = load_redactions(mode, info.width, info.height, duration)
+    large = large_blurs(redactions, info.width, info.height)
+    if large:
+        where = "; ".join(f"{a:.1f}-{b:.1f} s ({s:.0%})" for a, b, s in large[:5])
+        more = f" and {len(large) - 5} more" if len(large) > 5 else ""
+        message = (f"redact: the blur covers more than {LARGE_SHARE:.0%} of the frame at {where}{more}. Blur the "
+                   "private words, not the screen: --redact auto with --redact-terms for names, clients and "
+                   "projects (docs/redaction.md)")
+        if mode not in ("auto", "text") and not allow_large:
+            raise ValueError(message + "; pass --allow-large-blur if a whole screen really is private")
+        log(message.replace("redact: ", "redact: warning: ", 1))
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     listing = out_dir / "redactions.json"
